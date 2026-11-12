@@ -9,6 +9,7 @@ interface ProjectsViewProps {
   onAddProject: (project: Project) => void;
   onUpdateProject: (project: Project) => void;
   onDeleteProject: (id: string) => void;
+  onOpenQuote?: (id: string) => void;
 }
 
 const COLOR_PRESETS = [
@@ -22,7 +23,7 @@ const COLOR_PRESETS = [
   '#64748B'  // Slate
 ];
 
-export default function ProjectsView({ db, onAddProject, onUpdateProject, onDeleteProject }: ProjectsViewProps) {
+export default function ProjectsView({ db, onAddProject, onUpdateProject, onDeleteProject, onOpenQuote }: ProjectsViewProps) {
   const { projects, clients, timeEntries, tasks } = db;
 
   const [showForm, setShowForm] = useState(false);
@@ -515,7 +516,8 @@ export default function ProjectsView({ db, onAddProject, onUpdateProject, onDele
                 </div>
 
                 {/* Action buttons */}
-                <div className="flex justify-end gap-2 pt-3 border-t border-slate-50 mt-5">
+                <div className="flex flex-wrap justify-end gap-2 pt-3 border-t border-slate-50 mt-5">
+                  {onOpenQuote && <button type="button" onClick={() => onOpenQuote(proj.id)} className="p-1 px-2.5 bg-[#edf3f8] text-[#234e70] hover:bg-[#dfeaf3] rounded flex items-center gap-1 text-[11px] font-semibold border border-[#d7e5ef]">Pressupost PDF</button>}
                   <button
                     type="button"
                     onClick={() => {

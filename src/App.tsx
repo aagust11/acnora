@@ -27,6 +27,7 @@ import ClientsView from './components/ClientsView';
 import ProjectsView from './components/ProjectsView';
 import TasksView from './components/TasksView';
 import ReportsView from './components/ReportsView';
+import QuotesView from './components/QuotesView';
 import SettingsView from './components/SettingsView';
 import FileManagementView from './components/FileManagementView';
 
@@ -41,6 +42,7 @@ import {
   FileBarChart2,
   Settings as SettingsIcon,
   FileJson,
+  ReceiptText,
   Menu,
   X,
   Save,
@@ -54,6 +56,7 @@ const LOCAL_STORAGE_NAME_KEY = 'freelance_tracker_file_name';
 export default function App() {
   // Navigation State
   const [currentView, setCurrentView] = useState('Dashboard');
+  const [quoteProjectId, setQuoteProjectId] = useState('');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   // Core Db States
@@ -562,6 +565,7 @@ export default function App() {
             onAddProject={handleAddProject}
             onUpdateProject={handleUpdateProject}
             onDeleteProject={handleDeleteProject}
+            onOpenQuote={projectId => { setQuoteProjectId(projectId); setCurrentView('Pressupostos'); }}
           />
         );
       case 'Tasques':
@@ -575,6 +579,8 @@ export default function App() {
         );
       case 'Informes':
         return <ReportsView db={db} />;
+      case 'Pressupostos':
+        return <QuotesView db={db} initialProjectId={quoteProjectId} onEditTasks={() => setCurrentView('Tasques')} />;
       case 'Configuració':
         return (
           <SettingsView
@@ -613,6 +619,7 @@ export default function App() {
     { name: 'Clients', icon: Users, group: 'Organització' },
     { name: 'Projectes', icon: Briefcase, group: 'Organització' },
     { name: 'Tasques', icon: CheckSquare, group: 'Organització' },
+    { name: 'Pressupostos', icon: ReceiptText, group: 'Organització' },
     { name: 'Informes', icon: FileBarChart2, group: 'Anàlisi i dades' },
     { name: 'Configuració', icon: SettingsIcon, group: 'Anàlisi i dades' },
     { name: 'Dades i còpies', icon: Database, slug: 'Dades', group: 'Anàlisi i dades' }
@@ -626,6 +633,7 @@ export default function App() {
     Clients: { title: 'Clients', subtitle: 'Dades i relacions comercials' },
     Projectes: { title: 'Projectes', subtitle: 'Organitza la feina i controla els pressupostos' },
     Tasques: { title: 'Tasques', subtitle: 'Seguiment de les activitats de cada projecte' },
+    Pressupostos: { title: 'Pressupostos', subtitle: 'Estimacions i ofertes comercials per projecte' },
     Informes: { title: 'Informes', subtitle: 'Descarrega els registres i resums d’hores' },
     Configuració: { title: 'Configuració', subtitle: 'Preferències, tarifes i dades professionals' },
     Dades: { title: 'Dades i còpies', subtitle: 'Importa, exporta i protegeix la informació' },

@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { LocalDatabase, Task, TaskStatus, Project } from '../types';
 import { Plus, Edit3, Trash2, CheckCircle2, Circle, Clock, Briefcase, Eye, AlertTriangle, Kanban, LayoutGrid, RotateCcw, Play, Check } from 'lucide-react';
 import { formatDuration, formatCurrency } from '../utils/timeUtils';
+import { getTaskQuoteInputs, hoursRange } from '../utils/quotation';
 
 interface TasksViewProps {
   db: LocalDatabase;
@@ -25,7 +26,9 @@ export default function TasksView({ db, onAddTask, onUpdateTask, onDeleteTask }:
   const [descripcio, setDescripcio] = useState('');
   const [categoria, setCategoria] = useState('');
   const [estat, setEstat] = useState<TaskStatus>('pendent');
-  const [pressupostHores, setPressupostHores] = useState('');
+  const [horesMin, setHoresMin] = useState('');
+  const [horesMax, setHoresMax] = useState('');
+  const [tarifaPressupost, setTarifaPressupost] = useState('');
 
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -45,7 +48,9 @@ export default function TasksView({ db, onAddTask, onUpdateTask, onDeleteTask }:
     setDescripcio('');
     setCategoria('');
     setEstat('pendent');
-    setPressupostHores('');
+    setHoresMin('');
+    setHoresMax('');
+    setTarifaPressupost('');
     setFormError(null);
     setShowForm(true);
   };
@@ -57,7 +62,12 @@ export default function TasksView({ db, onAddTask, onUpdateTask, onDeleteTask }:
     setDescripcio(task.descripcio || '');
     setCategoria(task.categoria || '');
     setEstat(task.estat);
-    setPressupostHores(task.pressupostHores ? String(task.pressupostHores) : '');
+    const project = projects.find(p => p.id === task.projecteId);
+    const min = task.horesEstimadesMin ?? task.pressupostHores;
+    const max = task.horesEstimadesMax ?? task.pressupostHores;
+    setHoresMin(min !== undefined ? String(min) : '');
+    setHoresMax(max !== undefined ? String(max) : '');
+    setTarifaPressupost(task.tarifaHorariaPressupost !== undefined ? String(task.tarifaHorariaPressupost) : '');
     setFormError(null);
     setShowForm(true);
   };
@@ -73,14 +83,34 @@ export default function TasksView({ db, onAddTask, onUpdateTask, onDeleteTask }:
       return;
     }
 
+    const min = horesMin.trim() === '' ? undefined : Number(horesMin);
+    const max = horesMax.trim() === '' ? undefined : Number(horesMax);
+    const rate = tarifaPressupost.trim() === '' ? undefined : Number(tarifaPressupost);
+    if (min !== undefined && (!Number.isFinite(min) || min < 0) ||
+        max !== undefined && (!Number.isFinite(max) || max < 0) ||
+        min !== undefined && max !== undefined && min > max ||
+        rate !== undefined && (!Number.isFinite(rate) || rate <= 0)) {
+      setFormError('Revisa les hores (mínim ≤ màxim) i la tarifa (superior a 0).');
+      return;
+    }
+    if ((min === undefined) !== (max === undefined)) {
+      setFormError('Per poder pressupostar, indica tant el mínim com el màxim d’hores.');
+      return;
+    }
+
     const payload: Task = {
+      ...(editingTask ?? {}),
       id: editingTask ? editingTask.id : `t-${Date.now()}`,
       projecteId,
       nom,
       descripcio: descripcio || undefined,
       categoria: categoria || undefined,
       estat,
-      pressupostHores: pressupostHores ? Number(pressupostHores) : undefined,
+      // El màxim conserva el control de pressupost existent sense canviar els registres.
+      pressupostHores: max,
+      horesEstimadesMin: min,
+      horesEstimadesMax: max,
+      tarifaHorariaPressupost: rate,
       dataCreacio: editingTask ? editingTask.dataCreacio : new Date().toISOString(),
       dataModificacio: new Date().toISOString()
     };
@@ -366,28 +396,37 @@ export default function TasksView({ db, onAddTask, onUpdateTask, onDeleteTask }:
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 space-y-3">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">Pressupost (Hores)</label>
-                  <input
-                    type="number"
-                    min="0"
-                    placeholder="Ex: 20"
-                    value={pressupostHores}
-                    onChange={e => setPressupostHores(e.target.value)}
-                    className="w-full text-xs border border-slate-200 rounded-lg p-2 bg-slate-50 font-mono text-right"
-                  />
+                  <h4 className="text-sm font-semibold text-slate-800">Pressupost d'aquesta tasca</h4>
+                  <p className="text-xs text-slate-600 mt-1">Escriu manualment l'interval realista: per exemple, de 9 a 11 hores. No es calcula a partir d'un import rodó.</p>
                 </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">Descripció addicional</label>
-                  <input
-                    type="text"
-                    placeholder="Ex: Detalls a fer..."
-                    value={descripcio}
-                    onChange={e => setDescripcio(e.target.value)}
-                    className="w-full text-xs border border-slate-200 rounded-lg p-2 bg-slate-50"
-                  />
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <label className="text-xs font-medium text-slate-700">Mínim (h)
+                    <input type="number" min="0" step="0.25" value={horesMin} onChange={e => setHoresMin(e.target.value)}
+                      placeholder="9" className="block mt-1 w-full border border-slate-300 rounded-md p-2 bg-white" />
+                  </label>
+                  <label className="text-xs font-medium text-slate-700">Màxim (h)
+                    <input type="number" min="0" step="0.25" value={horesMax} onChange={e => setHoresMax(e.target.value)}
+                      placeholder="11" className="block mt-1 w-full border border-slate-300 rounded-md p-2 bg-white" />
+                  </label>
+                  <label className="text-xs font-medium text-slate-700">Tarifa ({db.settings.currency}/h)
+                    <input type="number" min="0.01" step="0.01" value={tarifaPressupost} onChange={e => setTarifaPressupost(e.target.value)}
+                      placeholder={String(projects.find(p => p.id === projecteId)?.tarifaHoraria ?? db.settings.defaultHourlyRate ?? 50)}
+                      className="block mt-1 w-full border border-slate-300 rounded-md p-2 bg-white" />
+                  </label>
                 </div>
+                <p className="text-xs text-slate-500">Si deixes la tarifa buida, s'aplica la tarifa del projecte o la general. No modifica les tarifes dels registres ja fitxats.</p>
+                {horesMin !== '' && horesMax !== '' && Number(horesMin) <= Number(horesMax) && (
+                  <div className="text-xs font-semibold text-[#234e70]">
+                    Import estimat: {formatCurrency(Number(horesMin) * Number(tarifaPressupost || projects.find(p => p.id === projecteId)?.tarifaHoraria || db.settings.defaultHourlyRate || 0), db.settings.currency)} – {formatCurrency(Number(horesMax) * Number(tarifaPressupost || projects.find(p => p.id === projecteId)?.tarifaHoraria || db.settings.defaultHourlyRate || 0), db.settings.currency)}
+                  </div>
+                )}
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Descripció addicional</label>
+                <input type="text" placeholder="Detalls a fer..." value={descripcio} onChange={e => setDescripcio(e.target.value)}
+                  className="w-full text-xs border border-slate-200 rounded-lg p-2 bg-slate-50" />
               </div>
 
               {formError && (
@@ -598,6 +637,11 @@ export default function TasksView({ db, onAddTask, onUpdateTask, onDeleteTask }:
                     </div>
                   </div>
 
+                  {project && task.horesEstimadesMin !== undefined && task.horesEstimadesMax !== undefined && (
+                    <div className="text-xs text-slate-600 border-t border-slate-100 pt-2">
+                      Estimació comercial: <strong>{hoursRange(task.horesEstimadesMin, task.horesEstimadesMax)}</strong> · {getTaskQuoteInputs(task, project, db.settings).hourlyRate} {db.settings.currency}/h
+                    </div>
+                  )}
                   {task.pressupostHores && (
                     <div className="text-xs text-slate-500 font-mono flex items-center justify-between border-t border-slate-50 pt-2">
                       <span>Pressupost hores tasca:</span>
@@ -718,6 +762,9 @@ function TaskKanbanCard({
           </div>
         )}
 
+        {task.horesEstimadesMin !== undefined && task.horesEstimadesMax !== undefined && (
+          <div className="mt-2 text-[11px] text-slate-600">Estimació: {hoursRange(task.horesEstimadesMin, task.horesEstimadesMax)}</div>
+        )}
         {/* Hour limitation target */}
         {task.pressupostHores && (
           <div className="mt-2.5 flex justify-between items-center text-[10.5px] font-mono text-slate-500 pt-1.5 border-t border-slate-50">

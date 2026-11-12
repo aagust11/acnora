@@ -224,12 +224,12 @@ export default function SettingsView({ db, onUpdateSettings, onClearDatabase, on
 
             <div>
               <label className="block text-xs font-semibold text-slate-707 mb-1 font-sans">Adreça física o despatx</label>
-              <input
-                type="text"
+              <textarea
+                rows={3}
                 value={address}
                 onChange={e => setAddress(e.target.value)}
                 className="w-full text-xs border border-slate-200 rounded-lg p-2 bg-slate-50"
-                placeholder="Carrer gran de Gràcia, 23..."
+                placeholder={'Carrer i número\nCodi postal i població\nProvíncia'}
               />
             </div>
           </div>

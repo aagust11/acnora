@@ -40,7 +40,10 @@ export interface Task {
   descripcio?: string;
   categoria?: string;
   estat: TaskStatus;
-  pressupostHores?: number;
+  pressupostHores?: number; // Límit operatiu anterior; s'utilitza com a màxim estimat
+  horesEstimadesMin?: number; // Estimació comercial manual i independent de l'import
+  horesEstimadesMax?: number;
+  tarifaHorariaPressupost?: number; // Sobreescriu la tarifa del projecte només en pressupostos
   notes?: string;
   dataCreacio: string;
   dataModificacio: string;

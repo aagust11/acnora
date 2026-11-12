@@ -17,6 +17,7 @@ function loadUtility(file) {
 
 const { createEmptyDatabase, normalizeDatabase } = loadUtility('src/utils/database.ts');
 const { localToday, isToday, isThisWeek, formatDuration, validateEntry } = loadUtility('src/utils/timeUtils.ts');
+const { buildQuoteSummary, getTaskQuoteInputs } = loadUtility('src/utils/quotation.ts');
 
 test('Un espai nou no conté clients ni registres d’exemple', () => {
   const db = createEmptyDatabase();
@@ -67,4 +68,39 @@ test('Un registre sense tarifa facturable requereix revisió', () => {
   };
   const result = validateEntry(entry, [{ id:'p1', estat:'actiu' }], [], []);
   assert.equal(result.status, 'pendent de revisar');
+});
+
+
+test('Pressupost amb interval manual: 9–11 h a 50 €/h, no 10 h artificials', () => {
+  const project = { id: 'p1', tarifaHoraria: 50 };
+  const settings = { defaultHourlyRate: 20, currency: 'EUR' };
+  const tasks = [{ id: 't1', nom: 'Automatització', horesEstimadesMin: 9, horesEstimadesMax: 11 }];
+  const out = buildQuoteSummary(tasks, project, settings);
+  assert.equal(out.errors.length, 0);
+  assert.equal(out.minHours, 9);
+  assert.equal(out.maxHours, 11);
+  assert.equal(out.minAmount, 450);
+  assert.equal(out.maxAmount, 550);
+});
+
+test('El pressupost de tasques antiga, d’una sola xifra, es conserva', () => {
+  const project = { id: 'p1', tarifaHoraria: 50 };
+  const settings = { defaultHourlyRate: 30 };
+  const task = { id: 't1', nom: 'Tasca antiga', pressupostHores: 8 };
+  const v = getTaskQuoteInputs(task, project, settings);
+  assert.equal(v.minHours, 8);
+  assert.equal(v.maxHours, 8);
+  assert.equal(v.hourlyRate, 50);
+});
+
+test('No es pot generar un pressupost amb hores incoherents o sense tarifa', () => {
+  const project = { id: 'p1' };
+  const settings = { defaultHourlyRate: 0 };
+  const tasks = [
+    { id: 't1', nom: 'Interval invertit', horesEstimadesMin: 11, horesEstimadesMax: 9, tarifaHorariaPressupost: 50 },
+    { id: 't2', nom: 'Sense tarifa', horesEstimadesMin: 2, horesEstimadesMax: 4 },
+  ];
+  const out = buildQuoteSummary(tasks, project, settings);
+  assert.equal(out.errors.length, 2);
+  assert.equal(out.lines.length, 0);
 });

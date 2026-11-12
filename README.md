@@ -67,3 +67,14 @@ Interfície corporativa amb menú agrupat per funció, tipografia de sistema (se
 ## Notes de desenvolupament
 
 El format JSON i el model de dades es mantenen compatibles amb la versió original. La compatibilitat d'importació es comprova amb les proves de `tests/core.test.cjs`. Per als riscos i millores pendents, consulta [l'auditoria funcional](docs/AUDITORIA.md).
+
+
+## Pressupostos per tasca (v1.1)
+
+Cada tasca pot tenir una **estimació mínima i màxima manual**, sense deduir-les d'un import rodó, i una **tarifa horària específica opcional**. Per exemple, 9–11 h a 50 €/h dona 450–550 € abans d'impostos. Si una tasca no té tarifa específica, s'aplica la tarifa del projecte i, finalment, la general. Les hores antigues d'un sol valor continuen llegint-se com a interval amb mínim i màxim iguals.
+
+L'apartat **Pressupostos** deixa escollir el projecte i les tasques a incloure i genera un PDF amb emissor, client, descripcions, referència, dates, preus i condicions. Es pot **ocultar l'estimació d'hores** i, independentment, la tarifa; els imports estimats continuen visibles. El PDF no és una factura, no calcula impostos ni converteix el rang en un preu tancat. El pressupost és una estimació editable a partir de les tasques, no un registre d'acceptació contractual ni un document amb versions persistides.
+
+L'**adreça de l'emissor** a Configuració ara accepta salts de línia; aquests apareixen també al PDF del pressupost.
+
+La generació del PDF és local al navegador, sense enviar informació comercial a serveis externs. Les dades JSON antigues són compatibles i els registres d'hores existents no es modifiquen.
