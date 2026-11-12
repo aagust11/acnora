@@ -66,4 +66,4 @@
 - El codi es pot publicar a GitHub Pages, però **no hi ha sincronització** dels clients i hores.
 - Si s'esborra l'emmagatzematge del navegador i no existeix un JSON extern, **es perden les dades**.
 - Una app local al navegador **no és equivalent a una aplicació SaaS corporativa amb servidor i garanties de disponibilitat**.
-- No s'ha executat una prova completa de compilació ni tests E2E en aquesta sessió perquè les dependències d'`npm ci` no s'han pogut descarregar a l'entorn. S'inclou CI per verificar-ho al repositori quan es publiqui.
+- **CI verificat:** GitHub Actions ha executat correctament `npm ci`, comprovació TypeScript, sis proves unitàries, compilació Vite i desplegament a Pages (12/11/2026). **Pendent:** comprovació visual i proves E2E completes al navegador.
