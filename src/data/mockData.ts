@@ -115,6 +115,8 @@ export const mockDatabase: LocalDatabase = {
       dataModificacio: '2025-12-30T17:00:00Z'
     }
   ],
+  blocs: [],
+  issuedQuotes: [],
   tasks: [
     {
       id: 't-1001',

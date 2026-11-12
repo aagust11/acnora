@@ -33,17 +33,40 @@ export interface Project {
   dataModificacio: string;
 }
 
+export type WorkBlockType = 'fase' | 'lliurable' | 'funcionalitat' | 'manteniment' | 'altre';
+
+export interface WorkBlock {
+  id: string;
+  projecteId: string;
+  nom: string;
+  tipus: WorkBlockType;
+  descripcio?: string;
+  ordre: number;
+  dataCreacio: string;
+  dataModificacio: string;
+}
+
+export interface QuoteRateBand {
+  id: string;
+  concepte?: string;
+  horesMin: number;
+  horesMax: number;
+  tarifa: number; // 0 €/h = no facturable / inclòs sense cost
+}
+
 export interface Task {
   id: string;
   projecteId: string;
   nom: string;
   descripcio?: string;
+  blocId?: string; // Optional; older JSON remains compatible
   categoria?: string;
   estat: TaskStatus;
   pressupostHores?: number; // Límit operatiu anterior; s'utilitza com a màxim estimat
   horesEstimadesMin?: number; // Estimació comercial manual i independent de l'import
   horesEstimadesMax?: number;
-  tarifaHorariaPressupost?: number; // Sobreescriu la tarifa del projecte només en pressupostos
+  tarifaHorariaPressupost?: number; // Legacy single-rate estimate, retained for compatibility
+  pressupostTrams?: QuoteRateBand[]; // Rates and hours by work type; zero rate supported
   notes?: string;
   dataCreacio: string;
   dataModificacio: string;
@@ -107,9 +130,43 @@ export interface AuditLogEntry {
   id: string;
   timestamp: string; // ISO string
   accio: string; // 'crear', 'editar', 'eliminar', 'arxivar', etc.
-  entitatAfectada: 'client' | 'projecte' | 'tasca' | 'registre' | 'configuració' | 'fitxer';
+  entitatAfectada: 'client' | 'projecte' | 'bloc' | 'tasca' | 'registre' | 'pressupost' | 'configuració' | 'fitxer';
   idEntitat: string;
   resum: string;
+}
+
+/** Each issued quote stores the exact original PDF; never regenerate it from edited tasks. */
+export interface IssuedQuote {
+  id: string;
+  reference: string;
+  projectId: string;
+  clientId: string;
+  projectName: string;
+  clientName: string;
+  createdAt: string;
+  issueDate: string;
+  validUntil: string; // Mandatory for auto-expiration of unaccepted proposals
+  status: 'pendent' | 'acceptat';
+  acceptedAt?: string;
+  minAmount: number;
+  maxAmount: number;
+  currency: string;
+  filename: string;
+  pdfDataUri: string; // Original PDF bytes encoded once, stored with JSON backups
+  snapshot: {
+    client: Client;
+    project: Project;
+    tasks: Task[];
+    settings: Settings;
+    text: {
+      taxes: string;
+      estimate: string;
+      conditions: string;
+      observations: string;
+    };
+    showHours: boolean;
+    showHourlyRates: boolean;
+  };
 }
 
 export interface LocalDatabase {
@@ -118,6 +175,8 @@ export interface LocalDatabase {
   clients: Client[];
   projects: Project[];
   tasks: Task[];
+  blocs: WorkBlock[];
+  issuedQuotes: IssuedQuote[];
   timeEntries: TimeEntry[];
   activeSession: ActiveSession | null;
   auditLog: AuditLogEntry[];

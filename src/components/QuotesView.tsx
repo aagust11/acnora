@@ -1,17 +1,21 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, FileText, AlertTriangle, Download, Info } from 'lucide-react';
-import type { LocalDatabase } from '../types';
+import { CheckCircle2, FileText, AlertTriangle, Download, Info, Trash2 } from 'lucide-react';
+import type { LocalDatabase, IssuedQuote } from '../types';
 import { buildQuoteSummary, getTaskQuoteInputs, hoursRange, quoteRange } from '../utils/quotation';
-import { generateQuotePDF } from '../utils/quotePdf';
+import { generateQuotePDF, DEFAULT_TAX_NOTE, DEFAULT_ESTIMATE_NOTE, DEFAULT_CONDITIONS } from '../utils/quotePdf';
+import { downloadIssuedQuote } from '../utils/issuedQuotes';
 import { localToday } from '../utils/timeUtils';
 
 interface QuotesViewProps {
   db: LocalDatabase;
   initialProjectId?: string;
   onEditTasks?: () => void;
+  onIssueQuote: (record: IssuedQuote) => boolean;
+  onAcceptQuote: (id: string) => boolean;
+  onDeleteQuote: (id: string) => boolean;
 }
 
-export default function QuotesView({ db, initialProjectId, onEditTasks }: QuotesViewProps) {
+export default function QuotesView({ db, initialProjectId, onEditTasks, onIssueQuote, onAcceptQuote, onDeleteQuote }: QuotesViewProps) {
   const [projectId, setProjectId] = useState(initialProjectId || '');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [showHours, setShowHours] = useState(true);
@@ -19,12 +23,19 @@ export default function QuotesView({ db, initialProjectId, onEditTasks }: Quotes
   const [issueDate, setIssueDate] = useState(localToday());
   const [quoteNumber, setQuoteNumber] = useState('');
   const [validUntil, setValidUntil] = useState('');
-  const [conditions, setConditions] = useState('La dedicació i l’import final dependran de l’abast definitiu i del temps realment necessari. Qualsevol ampliació de l’abast es pressupostarà per separat.');
+  const [conditions, setConditions] = useState(DEFAULT_CONDITIONS);
+  const [observations, setObservations] = useState('');
+  const [taxNote, setTaxNote] = useState(DEFAULT_TAX_NOTE);
+  const [estimateNote, setEstimateNote] = useState(DEFAULT_ESTIMATE_NOTE);
   const [error, setError] = useState('');
 
   const project = db.projects.find(p => p.id === projectId);
   const client = db.clients.find(c => c.id === project?.clientId);
-  const projectTasks = db.tasks.filter(t => t.projecteId === projectId && t.estat !== 'arxivada');
+  const projectTasks = db.tasks.filter(t => t.projecteId === projectId && t.estat !== 'arxivada').sort((a, b) => {
+    const x = db.blocs.find(block => block.id === a.blocId)?.ordre ?? Number.MAX_SAFE_INTEGER;
+    const y = db.blocs.find(block => block.id === b.blocId)?.ordre ?? Number.MAX_SAFE_INTEGER;
+    return x - y || (a.blocId || '').localeCompare(b.blocId || '') || a.nom.localeCompare(b.nom);
+  });
 
   useEffect(() => {
     if (initialProjectId) setProjectId(initialProjectId);
@@ -41,7 +52,7 @@ export default function QuotesView({ db, initialProjectId, onEditTasks }: Quotes
     [selectedTasks, project, db.settings]
   );
   const currency = db.settings.currency;
-  const canExport = !!project && !!client && !!summary && summary.lines.length > 0 && summary.errors.length === 0 && !!quoteNumber.trim() && !!issueDate && (!validUntil || validUntil >= issueDate);
+  const canExport = !!project && !!client && !!summary && summary.lines.length > 0 && summary.errors.length === 0 && !!quoteNumber.trim() && !!issueDate && !!validUntil && validUntil >= issueDate && validUntil >= localToday() && !db.issuedQuotes.some(q => q.reference.toLowerCase() === quoteNumber.trim().toLowerCase());
 
   const exportPDF = () => {
     if (!project || !client || !summary || !canExport) {
@@ -49,10 +60,31 @@ export default function QuotesView({ db, initialProjectId, onEditTasks }: Quotes
       return;
     }
     try {
-      generateQuotePDF(client, project, summary.lines, db.settings, {
+      const pdf = generateQuotePDF(client, project, summary.lines, db.settings, {
         quoteNumber: quoteNumber.trim(), issueDate, validUntil,
-        showHours, showHourlyRates, conditions,
+        showHours, showHourlyRates, conditions, observations, taxNote, estimateNote,
       });
+      // Snapshot all commercial information and retain exact PDF bytes; never rebuild an issued document.
+      const snapshot = JSON.parse(JSON.stringify({
+        client, project, tasks: summary.lines.map(l => l.task), settings: db.settings,
+        text: { taxes: taxNote, estimate: estimateNote, conditions, observations },
+        showHours, showHourlyRates,
+      })) as IssuedQuote['snapshot'];
+      const record: IssuedQuote = {
+        id: `q-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+        reference: quoteNumber.trim(), projectId: project.id, clientId: client.id,
+        projectName: project.nom, clientName: client.nom,
+        createdAt: new Date().toISOString(), issueDate, validUntil, status: 'pendent',
+        minAmount: summary.minAmount, maxAmount: summary.maxAmount,
+        currency: db.settings.currency,
+        filename: pdf.filename, pdfDataUri: pdf.pdfDataUri, snapshot,
+      };
+      if (!onIssueQuote(record)) {
+        setError('No s’ha pogut desar el pressupost emès. Revisa la referència i l’espai d’emmagatzematge.');
+        return;
+      }
+      downloadIssuedQuote(record);
+      setQuoteNumber('');
       setError('');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'No s’ha pogut generar el PDF.');
@@ -64,10 +96,10 @@ export default function QuotesView({ db, initialProjectId, onEditTasks }: Quotes
       <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between">
         <div>
           <h2 className="font-semibold text-lg text-slate-900">Pressupostos</h2>
-          <p className="text-sm text-slate-600 mt-1">Genera una oferta a partir de les tasques i de les estimacions definides a cada projecte.</p>
+          <p className="text-sm text-slate-600 mt-1">Emet pressupostos, conserva el PDF original i gestiona la validesa de cada proposta.</p>
         </div>
         <button onClick={exportPDF} disabled={!canExport} className="bg-[#234e70] hover:bg-[#1b3f5c] disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-md px-4 py-2.5 text-sm font-semibold flex items-center gap-2">
-          <Download className="w-4 h-4" /> Descarregar pressupost PDF
+          <FileText className="w-4 h-4" /> Emetre pressupost i desar PDF
         </button>
       </div>
 
@@ -85,8 +117,8 @@ export default function QuotesView({ db, initialProjectId, onEditTasks }: Quotes
           <label className="text-sm font-medium text-slate-700">Data d’emissió
             <input type="date" value={issueDate} onChange={e => setIssueDate(e.target.value)} className="block w-full mt-1.5 rounded-md border border-slate-300 p-2.5" />
           </label>
-          <label className="text-sm font-medium text-slate-700">Vàlid fins a (opcional)
-            <input type="date" min={issueDate} value={validUntil} onChange={e => setValidUntil(e.target.value)} className="block w-full mt-1.5 rounded-md border border-slate-300 p-2.5" />
+          <label className="text-sm font-medium text-slate-700">Vàlid fins a *
+            <input type="date" required min={issueDate > localToday() ? issueDate : localToday()} value={validUntil} onChange={e => setValidUntil(e.target.value)} className="block w-full mt-1.5 rounded-md border border-slate-300 p-2.5" />
           </label>
         </div>
         {client && <p className="text-sm text-slate-600">Destinatari: <span className="font-semibold text-slate-800">{client.nom}</span></p>}
@@ -112,13 +144,22 @@ export default function QuotesView({ db, initialProjectId, onEditTasks }: Quotes
               <tbody>
                 {projectTasks.map(task => {
                   const values = getTaskQuoteInputs(task, project, db.settings);
-                  const valid = values.minHours !== undefined && values.maxHours !== undefined && values.minHours >= 0 && values.maxHours >= values.minHours && values.hourlyRate > 0;
+                  const one = buildQuoteSummary([task], project, db.settings);
+                  const valid = one.errors.length === 0 && one.lines.length === 1;
+                  const quoted = one.lines[0];
                   return <tr key={task.id} className="border-t border-slate-100">
                     <td className="px-3 py-3"><input type="checkbox" checked={selectedIds.includes(task.id)} onChange={e => setSelectedIds(ids => e.target.checked ? [...ids, task.id] : ids.filter(id => id !== task.id))} aria-label={`Incloure ${task.nom}`} className="w-4 h-4 accent-[#234e70]" /></td>
-                    <td className="px-3 py-3"><div className="font-medium text-slate-800">{task.nom}</div>{task.descripcio && <div className="text-xs text-slate-500 mt-0.5">{task.descripcio}</div>}</td>
+                    <td className="px-3 py-3">
+                      {task.blocId && <div className="text-xs font-medium text-[#234e70] mb-1">{db.blocs.find(b=>b.id===task.blocId)?.nom || 'Bloc desconegut'}</div>}
+                      <div className="font-medium text-slate-800">{task.nom}</div>
+                      {task.descripcio && <div className="text-xs text-slate-500 mt-0.5 whitespace-pre-line">{task.descripcio}</div>}
+                      {values.trams && values.trams.length > 1 && <div className="text-xs text-slate-600 mt-2 space-y-1 border-l-2 border-slate-200 pl-2">
+                        {values.trams.map(t => <div key={t.id}>{t.concepte || 'Tram'}: {hoursRange(t.horesMin,t.horesMax)} × {quoteRange(t.tarifa,t.tarifa,currency)}/h</div>)}
+                      </div>}
+                    </td>
                     <td className="px-3 py-3 text-right tabular-nums">{values.minHours === undefined || values.maxHours === undefined ? <span className="text-amber-700">Pendent</span> : hoursRange(values.minHours, values.maxHours)}</td>
-                    <td className="px-3 py-3 text-right tabular-nums">{quoteRange(values.hourlyRate, values.hourlyRate, currency)}</td>
-                    <td className="px-3 py-3 text-right tabular-nums font-medium">{valid ? quoteRange(values.minHours! * values.hourlyRate, values.maxHours! * values.hourlyRate, currency) : <span className="text-amber-700">Per completar</span>}</td>
+                    <td className="px-3 py-3 text-right tabular-nums">{values.hourlyRate === null ? <span className="text-slate-600">Diverses tarifes</span> : quoteRange(values.hourlyRate, values.hourlyRate, currency)}</td>
+                    <td className="px-3 py-3 text-right tabular-nums font-medium">{valid ? quoteRange(quoted.minAmount, quoted.maxAmount, currency) : <span className="text-amber-700">Per completar</span>}</td>
                   </tr>;
                 })}
               </tbody>
@@ -147,14 +188,50 @@ export default function QuotesView({ db, initialProjectId, onEditTasks }: Quotes
           </label>
         </div>
         {!showHours && showHourlyRates && <div className="text-sm text-slate-600 flex items-start gap-2"><Info className="w-4 h-4 mt-0.5 shrink-0" /> Tot i ocultar les hores, mostrar tarifes i imports permet al client deduir aproximadament la dedicació.</div>}
-        <label className="text-sm font-medium text-slate-700 block">Condicions i observacions del pressupost
-          <textarea rows={4} value={conditions} onChange={e => setConditions(e.target.value)} placeholder="Condicions comercials, forma de pagament..." className="block w-full mt-1.5 rounded-md border border-slate-300 p-3 font-normal text-sm" />
+        <div className="grid md:grid-cols-2 gap-4">
+          <label className="text-sm font-medium text-slate-700 block">Nota sobre impostos
+            <textarea rows={3} value={taxNote} onChange={e => setTaxNote(e.target.value)} placeholder="Informació fiscal que vols mostrar..." className="block w-full mt-1.5 rounded-md border border-slate-300 p-3 font-normal text-sm" />
+          </label>
+          <label className="text-sm font-medium text-slate-700 block">Avís sobre l'import estimat
+            <textarea rows={3} value={estimateNote} onChange={e => setEstimateNote(e.target.value)} placeholder="Text sobre estimacions o preus tancats..." className="block w-full mt-1.5 rounded-md border border-slate-300 p-3 font-normal text-sm" />
+          </label>
+        </div>
+        <label className="text-sm font-medium text-slate-700 block">Condicions comercials
+          <textarea rows={4} value={conditions} onChange={e => setConditions(e.target.value)} placeholder="Forma de pagament, terminis, abast, modificacions..." className="block w-full mt-1.5 rounded-md border border-slate-300 p-3 font-normal text-sm" />
         </label>
-        <p className="text-xs text-slate-600">El PDF inclou l’emissor (Configuració), el client i les tasques seleccionades. Mostra un rang de preus abans d’impostos, no una oferta de preu tancat. L’exportació no altera les hores fitxades.</p>
+        <label className="text-sm font-medium text-slate-700 block">Observacions addicionals
+          <textarea rows={4} value={observations} onChange={e => setObservations(e.target.value)} placeholder="Aclariments al client, requisits o notes complementàries..." className="block w-full mt-1.5 rounded-md border border-slate-300 p-3 font-normal text-sm" />
+        </label>
+        <p className="text-xs text-slate-500">Tots els textos admeten salts de línia. Quedaran incorporats al PDF emès i no es modificaran encara que posteriorment editis aquest formulari.</p>
+        <p className="text-xs text-slate-600">La validesa és obligatòria. El PDF emès queda congelat; els pressupostos pendents que caduquin s'eliminen en reobrir ACnora o mentre estigui oberta. Els acceptats es conserven.</p>
         {error && <p className="text-sm text-red-700">{error}</p>}
-        <div className="flex justify-end"><button onClick={exportPDF} disabled={!canExport} className="bg-[#234e70] hover:bg-[#1b3f5c] disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-md px-5 py-3 text-sm font-semibold flex items-center gap-2"><FileText className="w-4 h-4" /> Generar pressupost PDF</button></div>
+        <div className="flex justify-end"><button onClick={exportPDF} disabled={!canExport} className="bg-[#234e70] hover:bg-[#1b3f5c] disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-md px-5 py-3 text-sm font-semibold flex items-center gap-2"><FileText className="w-4 h-4" /> Emetre i desar el pressupost</button></div>
       </div>}
       {!project && <div className="bg-white border border-slate-200 rounded-lg p-8 text-sm text-slate-600 flex items-center gap-3"><CheckCircle2 className="w-5 h-5 text-slate-400" /> Selecciona un projecte per preparar un pressupost.</div>}
+
+      <section className="bg-white rounded-lg border border-slate-200 overflow-hidden" aria-label="Registre de pressupostos emesos">
+        <div className="p-5 border-b border-slate-200">
+          <h3 className="text-base font-semibold text-slate-900">Pressupostos emesos</h3>
+          <p className="text-xs text-slate-600 mt-1">Es conserva el PDF original, independentment de qualsevol canvi posterior a l'aplicació. Després de caducar, les propostes no acceptades s'eliminen en obrir o utilitzar ACnora.</p>
+        </div>
+        {!db.issuedQuotes.length ? <p className="px-5 py-7 text-sm text-slate-600">Encara no s'ha emès cap pressupost.</p> : (
+          <div className="divide-y divide-slate-100">
+            {[...db.issuedQuotes].sort((a,b) => b.createdAt.localeCompare(a.createdAt)).map(q => <div key={q.id} className="p-4 md:p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex flex-wrap gap-2 items-center"><span className="font-semibold text-sm text-slate-900">{q.reference}</span><span className={`px-2 py-0.5 rounded text-xs ${q.status === 'acceptat' ? 'bg-emerald-50 text-emerald-800' : 'bg-slate-100 text-slate-700'}`}>{q.status === 'acceptat' ? 'Acceptat' : 'Pendent'}</span></div>
+                <p className="text-sm text-slate-700 mt-1">{q.clientName} · {q.projectName}</p>
+                <p className="text-xs text-slate-600 mt-1">Emès: {q.issueDate} · Vàlid fins: {q.validUntil} · {quoteRange(q.minAmount, q.maxAmount, q.currency)}</p>
+              </div>
+              <div className="flex flex-wrap gap-2 shrink-0">
+                <button type="button" onClick={() => { try { downloadIssuedQuote(q); setError(''); } catch (e) { setError(e instanceof Error ? e.message : 'No s’ha pogut descarregar.'); } }} className="inline-flex items-center gap-2 border border-slate-300 rounded-md px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"><Download className="w-4 h-4" /> PDF original</button>
+                {q.status === 'pendent' && <button type="button" onClick={() => { if (window.confirm(`Confirmes que el client ha acceptat el pressupost ${q.reference}?`)) { if (!onAcceptQuote(q.id)) setError('No s’ha pogut registrar l’acceptació.'); } }} className="border border-emerald-300 text-emerald-800 rounded-md px-3 py-2 text-xs font-semibold hover:bg-emerald-50">Marcar acceptat</button>}
+                <button type="button" onClick={() => { if (window.confirm(`Eliminar definitivament el pressupost ${q.reference} i el seu PDF original? Aquesta acció no es pot desfer.`)) { if (!onDeleteQuote(q.id)) setError('No s’ha pogut eliminar.'); } }} className="inline-flex items-center gap-1 border border-slate-300 rounded-md px-3 py-2 text-xs text-slate-600 hover:text-red-700 hover:border-red-300"><Trash2 className="w-4 h-4" /> Eliminar</button>
+              </div>
+            </div>)}
+          </div>
+        )}
+      </section>
+      {error && <div role="alert" className="text-sm text-red-700">{error}</div>}
     </div>
   );
 }

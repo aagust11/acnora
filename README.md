@@ -73,8 +73,22 @@ El format JSON i el model de dades es mantenen compatibles amb la versió origin
 
 Cada tasca pot tenir una **estimació mínima i màxima manual**, sense deduir-les d'un import rodó, i una **tarifa horària específica opcional**. Per exemple, 9–11 h a 50 €/h dona 450–550 € abans d'impostos. Si una tasca no té tarifa específica, s'aplica la tarifa del projecte i, finalment, la general. Les hores antigues d'un sol valor continuen llegint-se com a interval amb mínim i màxim iguals.
 
-L'apartat **Pressupostos** deixa escollir el projecte i les tasques a incloure i genera un PDF amb emissor, client, descripcions, referència, dates, preus i condicions. Es pot **ocultar l'estimació d'hores** i, independentment, la tarifa; els imports estimats continuen visibles. El PDF no és una factura, no calcula impostos ni converteix el rang en un preu tancat. El pressupost és una estimació editable a partir de les tasques, no un registre d'acceptació contractual ni un document amb versions persistides.
+L'apartat **Pressupostos** deixa escollir el projecte i les tasques a incloure i genera un PDF amb emissor, client, descripcions, referència, dates, preus i condicions. Es pot **ocultar l'estimació d'hores** i, independentment, la tarifa; els imports estimats continuen visibles. El PDF no és una factura, no calcula impostos ni converteix el rang en un preu tancat. El pressupost parteix de l'estimació de les tasques. A partir de v1.2, el PDF emès es conserva immutable dins de les dades locals; marcar «acceptat» és una anotació manual, no una signatura contractual.
 
 L'**adreça de l'emissor** a Configuració ara accepta salts de línia; aquests apareixen també al PDF del pressupost.
 
 La generació del PDF és local al navegador, sense enviar informació comercial a serveis externs. Les dades JSON antigues són compatibles i els registres d'hores existents no es modifiquen.
+
+## Blocs de treball, trams i pressupostos emesos (v1.2)
+
+- **Blocs de treball** opcionals dins de cada projecte: fases, lliurables, funcionalitats o manteniment. Les tasques antigues sense bloc es conserven.
+- **Diverses tarifes en una tasca**: cada tram té concepte, hores mínimes i màximes i tarifa pròpia. Una tarifa explícita de **0 €/h** compta com a dedicació no facturable. Les hores i imports se sumen per tram.
+- **Descripcions multilínia**: els salts de línia de tasques, adreça, condicions i observacions es mantenen en el PDF.
+- **Textos comercials editables abans d'emetre**: nota d'impostos, avís sobre l'estimació del preu, condicions comercials i observacions addicionals. Tots els camps admeten Enter.
+- **Pressupost emès**: un cop creada l'oferta, es guarda en el JSON una instantània de les dades comercials **i els bytes del PDF original**; el PDF de l'historial no es torna a generar i els canvis posteriors de la tasca no l'afecten.
+- **Registre**: es pot tornar a descarregar el PDF emès, marcar-lo com a acceptat o eliminar-lo manualment. Els pressupostos **pendents** s'eliminen automàticament a partir de l'endemà de la data de validesa, quan l'aplicació s'obre o mentre estigui en execució (comprovació cada minut). Els acceptats es conserven.
+- La **data de validesa és obligatòria** en emetre una proposta, per poder aplicar una caducitat real.
+
+### Límit d'emmagatzematge important
+
+Els PDF es guarden dins del JSON local en Base64 per fer-los exportables juntament amb les dades. Això augmenta l'ocupació del `localStorage` i la mida de les còpies JSON. Si s'exhaureix la quota, ACnora no considera el pressupost com a emès i avisa de l'error. **Fes còpies periòdiques del JSON i dels PDF originals.** No existeix una tasca en segon pla: amb la web tancada no s'executa cap purga. Tampoc no és un sistema d'arxiu legal amb signatura digital ni un registre d'acceptació verificable per un tercer: marcar «acceptat» és una acció manual local.

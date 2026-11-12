@@ -3,6 +3,10 @@ import type { Client, Project, Settings } from '../types';
 import type { QuoteLine } from './quotation';
 import { hoursRange, quoteRange } from './quotation';
 
+export const DEFAULT_TAX_NOTE = 'Imports abans d’impostos. Els impostos aplicables no estan inclosos.';
+export const DEFAULT_ESTIMATE_NOTE = 'L’import és una estimació variable segons les hores finalment dedicades. No és un preu tancat.';
+export const DEFAULT_CONDITIONS = 'La dedicació i l’import final dependran de l’abast definitiu i del temps realment necessari. Qualsevol ampliació de l’abast es pressupostarà per separat.';
+
 export interface QuotePDFOptions {
   quoteNumber: string;
   issueDate: string;
@@ -10,6 +14,9 @@ export interface QuotePDFOptions {
   showHours: boolean;
   showHourlyRates: boolean;
   conditions: string;
+  observations: string;
+  taxNote: string;
+  estimateNote: string;
 }
 
 const displayDate = (date: string): string => {
@@ -104,6 +111,16 @@ export function generateQuotePDF(
   if (project.descripcio?.trim()) lineText(project.descripcio, left, content, 9);
   y += 8;
 
+  // Explicit newlines from the multi-line task description must survive PDF layout.
+  const wrapPreserveLines = (value: string, maxWidth: number): string[] => {
+    const lines: string[] = [];
+    for (const raw of safe(value).split(/\r?\n/)) {
+      if (!raw.trim()) { lines.push(' '); continue; }
+      lines.push(...doc.splitTextToSize(raw, maxWidth));
+    }
+    return lines;
+  };
+
   const number = (v: number) => new Intl.NumberFormat('ca-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v);
   const currency = settings.currency;
   const amt = (min: number, max: number) => quoteRange(min, max, currency);
@@ -127,8 +144,8 @@ export function generateQuotePDF(
   drawHeader();
 
   lines.forEach((line, index) => {
-    const rowTitle = doc.splitTextToSize(safe(line.task.nom), Math.max(40, titleWidth));
-    const rowDesc = line.task.descripcio ? doc.splitTextToSize(safe(line.task.descripcio), Math.max(40, titleWidth)) : [];
+    const rowTitle = wrapPreserveLines(line.task.nom, Math.max(40, titleWidth));
+    const rowDesc = line.task.descripcio ? wrapPreserveLines(line.task.descripcio, Math.max(40, titleWidth)) : [];
     const textHeight = Math.max(7, rowTitle.length * 4.3 + (rowDesc.length ? rowDesc.length * 3.7 + 1 : 0) + 3);
     if (y + textHeight > height - 20) {
       doc.addPage();
@@ -152,13 +169,35 @@ export function generateQuotePDF(
     doc.setFontSize(8);
     setDark();
     if (options.showHours) doc.text(hoursRange(line.minHours, line.maxHours), colHours - 3, top + 2.5, { align: 'right' });
-    if (options.showHourlyRates) doc.text(`${number(line.hourlyRate)} ${currency}/h`, colRate, top + 2.5, { align: 'right' });
+    if (options.showHourlyRates) doc.text(line.hourlyRate === null ? 'Diverses' : `${number(line.hourlyRate)} ${currency}/h`, colRate, top + 2.5, { align: 'right' });
     // Fit amounts to the allocated right-hand column; if needed render on 2 lines.
     const display = amt(line.minAmount, line.maxAmount);
     const amountWidth = options.showHourlyRates ? 51 : options.showHours ? 52 : 98;
     const amountParts = doc.splitTextToSize(safe(display), amountWidth);
     doc.text(amountParts, colAmount - 1, top + 2.5, { align: 'right' });
     y = top + Math.max(textHeight, amountParts.length * 4 + 3);
+    // Show the per-rate breakdown only when there is more than one rate band.
+    // Never reveal internal hours or hourly rates when the PDF options hide them.
+    if (line.trams.length > 1) {
+      y += 2;
+      line.trams.forEach((tram, index) => {
+        pageBreak(8);
+        const label = safe(tram.concepte || `Tram ${index + 1}`);
+        const details = [
+          options.showHours ? hoursRange(tram.horesMin, tram.horesMax) : '',
+          options.showHourlyRates ? `${number(tram.tarifa)} ${currency}/h` : '',
+        ].filter(Boolean).join('  ·  ');
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(7);
+        doc.setTextColor(93, 108, 120);
+        const detailText = `${label}${details ? ': ' + details : ''}`;
+        const parts = wrapPreserveLines(detailText, content - 8 - (options.showHourlyRates || options.showHours ? 49 : 37));
+        doc.text(parts, left + 5, y + 2);
+        doc.text(safe(amt(tram.minAmount, tram.maxAmount)), colAmount - 1, y + 2, { align: 'right' });
+        y += Math.max(4, parts.length * 3.3);
+      });
+      y += 2;
+    }
     doc.setDrawColor(234, 238, 242);
     doc.line(left, y - 1, right, y - 1);
   });
@@ -185,13 +224,22 @@ export function generateQuotePDF(
   doc.text(safe(amt(totalMin, totalMax)), right - 4, y + 11, { align: 'right' });
   y += 25;
   setDark();
-  lineText('Imports abans d’impostos. Els impostos aplicables no estan inclosos.', left, content, 8);
-  if (totalMin !== totalMax) lineText('L’import és una estimació variable segons les hores finalment dedicades. No és un preu tancat.', left, content, 8);
+  // Every commercial clause is editable in the quote editor; preserve explicit line breaks.
+  if (options.taxNote.trim()) lineText(options.taxNote.trim(), left, content, 8);
+  if (options.estimateNote.trim() && (totalMin !== totalMax || options.estimateNote !== DEFAULT_ESTIMATE_NOTE)) {
+    lineText(options.estimateNote.trim(), left, content, 8);
+  }
   if (options.conditions.trim()) {
     y += 5;
     pageBreak(12);
-    lineText('CONDICIONS I OBSERVACIONS', left, content, 9, true);
-    lineText(options.conditions, left, content, 9);
+    lineText('CONDICIONS', left, content, 9, true);
+    lineText(options.conditions.trim(), left, content, 9);
+  }
+  if (options.observations.trim()) {
+    y += 5;
+    pageBreak(12);
+    lineText('OBSERVACIONS ADDICIONALS', left, content, 9, true);
+    lineText(options.observations.trim(), left, content, 9);
   }
 
   const pages = doc.getNumberOfPages();
@@ -206,5 +254,10 @@ export function generateQuotePDF(
     doc.text(`${i} / ${pages}`, right, height - 11, { align: 'right' });
   }
   const cleanFilename = (options.quoteNumber || project.nom).normalize('NFKD').replace(/[^a-zA-Z0-9-_]/g, '-').slice(0, 70);
-  doc.save(`pressupost_${cleanFilename}.pdf`);
+  // Save exact bytes of the original document so edits and future template changes
+  // never change a previously issued proposal.
+  return {
+    filename: `pressupost_${cleanFilename}.pdf`,
+    pdfDataUri: doc.output('datauristring'),
+  };
 }

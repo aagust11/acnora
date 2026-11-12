@@ -1,18 +1,21 @@
 import React, { useState } from 'react';
-import { LocalDatabase, Task, TaskStatus, Project } from '../types';
+import { LocalDatabase, Task, TaskStatus, Project, WorkBlock, WorkBlockType, QuoteRateBand } from '../types';
 import { Plus, Edit3, Trash2, CheckCircle2, Circle, Clock, Briefcase, Eye, AlertTriangle, Kanban, LayoutGrid, RotateCcw, Play, Check } from 'lucide-react';
 import { formatDuration, formatCurrency } from '../utils/timeUtils';
-import { getTaskQuoteInputs, hoursRange } from '../utils/quotation';
+import { buildQuoteSummary, getTaskQuoteInputs, hoursRange, quoteRange } from '../utils/quotation';
 
 interface TasksViewProps {
   db: LocalDatabase;
+  onAddBlock: (bloc: WorkBlock) => void;
+  onUpdateBlock: (bloc: WorkBlock) => void;
+  onDeleteBlock: (id: string) => void;
   onAddTask: (task: Task) => void;
   onUpdateTask: (task: Task) => void;
   onDeleteTask: (id: string) => void;
 }
 
-export default function TasksView({ db, onAddTask, onUpdateTask, onDeleteTask }: TasksViewProps) {
-  const { tasks, projects, clients, timeEntries } = db;
+export default function TasksView({ db, onAddBlock, onUpdateBlock, onDeleteBlock, onAddTask, onUpdateTask, onDeleteTask }: TasksViewProps) {
+  const { tasks, projects, clients, timeEntries, blocs } = db;
 
   // Active projects list
   const activeProjects = projects.filter(p => p.estat !== 'arxivat');
@@ -26,9 +29,47 @@ export default function TasksView({ db, onAddTask, onUpdateTask, onDeleteTask }:
   const [descripcio, setDescripcio] = useState('');
   const [categoria, setCategoria] = useState('');
   const [estat, setEstat] = useState<TaskStatus>('pendent');
-  const [horesMin, setHoresMin] = useState('');
-  const [horesMax, setHoresMax] = useState('');
-  const [tarifaPressupost, setTarifaPressupost] = useState('');
+  const [blocId, setBlocId] = useState('');
+  type DraftRate = { id: string; concepte: string; horesMin: string; horesMax: string; tarifa: string };
+  const [draftRates, setDraftRates] = useState<DraftRate[]>([]);
+  const [selectedBlockId, setSelectedBlockId] = useState('all');
+  const [editingBlock, setEditingBlock] = useState<WorkBlock | null>(null);
+  const [blockName, setBlockName] = useState('');
+  const [blockType, setBlockType] = useState<WorkBlockType>('fase');
+  const [blockDescription, setBlockDescription] = useState('');
+  const [blockError, setBlockError] = useState('');
+  const [blockFormOpen, setBlockFormOpen] = useState(false);
+  const newDraft = (): DraftRate => ({ id: `tram-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, concepte: '', horesMin: '', horesMax: '', tarifa: '' });
+  const selectedProject = projects.find(p => p.id === projecteId);
+  const projectBlocks = blocs.filter(b => b.projecteId === projecteId).sort((a, b) => a.ordre - b.ordre);
+  const previewRates: QuoteRateBand[] = draftRates.filter(t => t.horesMin !== '' && t.horesMax !== '' && t.tarifa !== '').map(t => ({
+    id: t.id, concepte: t.concepte, horesMin: Number(t.horesMin), horesMax: Number(t.horesMax), tarifa: Number(t.tarifa),
+  }));
+  const previewQuote = selectedProject && previewRates.length && previewRates.length === draftRates.length
+    ? buildQuoteSummary([{id: editingTask?.id ?? 'preview', nom, projecteId, estat, pressupostTrams: previewRates} as Task], selectedProject, db.settings)
+    : null;
+
+  const openCreateBlock = () => {
+    setEditingBlock(null); setBlockName(''); setBlockDescription(''); setBlockType('fase'); setBlockError(''); setBlockFormOpen(true);
+  };
+  const openEditBlock = (block: WorkBlock) => {
+    setEditingBlock(block); setBlockName(block.nom); setBlockDescription(block.descripcio || ''); setBlockType(block.tipus); setBlockError(''); setBlockFormOpen(true);
+  };
+  const saveBlock = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeProjectSelected) { setBlockError('Selecciona primer un projecte.'); return; }
+    if (!blockName.trim()) { setBlockError('Introdueix el nom del bloc.'); return; }
+    if (blocs.some(b => b.projecteId === activeProjectSelected.id && b.nom.trim().toLowerCase() === blockName.trim().toLowerCase() && b.id !== editingBlock?.id)) {
+      setBlockError('Ja hi ha un bloc amb aquest nom en aquest projecte.'); return;
+    }
+    const now = new Date().toISOString();
+    const block: WorkBlock = { id: editingBlock?.id ?? `b-${Date.now()}-${Math.random().toString(36).slice(2,6)}`, projecteId: activeProjectSelected.id,
+      nom: blockName.trim(), tipus: blockType, descripcio: blockDescription.trim() || undefined,
+      ordre: editingBlock?.ordre ?? blocs.filter(b => b.projecteId === activeProjectSelected.id).length,
+      dataCreacio: editingBlock?.dataCreacio ?? now, dataModificacio: now };
+    if (editingBlock) onUpdateBlock(block); else onAddBlock(block);
+    setBlockFormOpen(false);
+  };
 
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -47,10 +88,9 @@ export default function TasksView({ db, onAddTask, onUpdateTask, onDeleteTask }:
     setNom('');
     setDescripcio('');
     setCategoria('');
+    setBlocId(selectedBlockId !== 'all' && selectedBlockId !== 'none' ? selectedBlockId : '');
     setEstat('pendent');
-    setHoresMin('');
-    setHoresMax('');
-    setTarifaPressupost('');
+    setDraftRates([]);
     setFormError(null);
     setShowForm(true);
   };
@@ -61,13 +101,17 @@ export default function TasksView({ db, onAddTask, onUpdateTask, onDeleteTask }:
     setNom(task.nom);
     setDescripcio(task.descripcio || '');
     setCategoria(task.categoria || '');
+    setBlocId(task.blocId || '');
     setEstat(task.estat);
-    const project = projects.find(p => p.id === task.projecteId);
-    const min = task.horesEstimadesMin ?? task.pressupostHores;
-    const max = task.horesEstimadesMax ?? task.pressupostHores;
-    setHoresMin(min !== undefined ? String(min) : '');
-    setHoresMax(max !== undefined ? String(max) : '');
-    setTarifaPressupost(task.tarifaHorariaPressupost !== undefined ? String(task.tarifaHorariaPressupost) : '');
+    if (Array.isArray(task.pressupostTrams)) {
+      setDraftRates(task.pressupostTrams.map(r => ({ id:r.id, concepte:r.concepte || '', horesMin:String(r.horesMin), horesMax:String(r.horesMax), tarifa:String(r.tarifa) })));
+    } else {
+      const min = task.horesEstimadesMin ?? task.pressupostHores;
+      const max = task.horesEstimadesMax ?? task.pressupostHores;
+      const proj = projects.find(p => p.id === task.projecteId);
+      const defaultRate = task.tarifaHorariaPressupost ?? proj?.tarifaHoraria ?? db.settings.defaultHourlyRate;
+      setDraftRates(min === undefined && max === undefined ? [] : [{ id:`tram-${Date.now()}`, concepte:'', horesMin:String(min ?? ''), horesMax:String(max ?? ''), tarifa:String(defaultRate) }]);
+    }
     setFormError(null);
     setShowForm(true);
   };
@@ -83,20 +127,21 @@ export default function TasksView({ db, onAddTask, onUpdateTask, onDeleteTask }:
       return;
     }
 
-    const min = horesMin.trim() === '' ? undefined : Number(horesMin);
-    const max = horesMax.trim() === '' ? undefined : Number(horesMax);
-    const rate = tarifaPressupost.trim() === '' ? undefined : Number(tarifaPressupost);
-    if (min !== undefined && (!Number.isFinite(min) || min < 0) ||
-        max !== undefined && (!Number.isFinite(max) || max < 0) ||
-        min !== undefined && max !== undefined && min > max ||
-        rate !== undefined && (!Number.isFinite(rate) || rate <= 0)) {
-      setFormError('Revisa les hores (mínim ≤ màxim) i la tarifa (superior a 0).');
-      return;
+    const partial = draftRates.some(t => [t.horesMin, t.horesMax, t.tarifa].some(value => value.trim() === ''));
+    if (partial) { setFormError('Completa les hores mínimes, les màximes i la tarifa de cada tram. Per a hores gratuïtes, posa 0 a la tarifa.'); return; }
+    const rated: QuoteRateBand[] = draftRates.map(t => ({ id:t.id, concepte:t.concepte.trim() || undefined,
+      horesMin:Number(t.horesMin), horesMax:Number(t.horesMax), tarifa:Number(t.tarifa) }));
+    if (rated.some(t => !Number.isFinite(t.horesMin) || !Number.isFinite(t.horesMax) || !Number.isFinite(t.tarifa) || t.horesMin < 0 || t.horesMax < t.horesMin || t.tarifa < 0)) {
+      setFormError('Revisa els trams: mínim ≤ màxim i tarifa ≥ 0.'); return;
     }
-    if ((min === undefined) !== (max === undefined)) {
-      setFormError('Per poder pressupostar, indica tant el mínim com el màxim d’hores.');
-      return;
+    if (rated.length && !rated.some(t => t.horesMax > 0)) {
+      setFormError('Introdueix alguna hora estimada o elimina els trams buits.'); return;
     }
+    if (blocId && !blocs.some(b => b.id === blocId && b.projecteId === projecteId)) {
+      setFormError('El bloc seleccionat no pertany a aquest projecte.'); return;
+    }
+    const min = rated.length ? rated.reduce((sum, r) => sum + r.horesMin, 0) : undefined;
+    const max = rated.length ? rated.reduce((sum, r) => sum + r.horesMax, 0) : undefined;
 
     const payload: Task = {
       ...(editingTask ?? {}),
@@ -105,12 +150,14 @@ export default function TasksView({ db, onAddTask, onUpdateTask, onDeleteTask }:
       nom,
       descripcio: descripcio || undefined,
       categoria: categoria || undefined,
+      blocId: blocId || undefined,
       estat,
       // El màxim conserva el control de pressupost existent sense canviar els registres.
       pressupostHores: max,
       horesEstimadesMin: min,
       horesEstimadesMax: max,
-      tarifaHorariaPressupost: rate,
+      tarifaHorariaPressupost: undefined,
+      pressupostTrams: rated.length ? rated : undefined,
       dataCreacio: editingTask ? editingTask.dataCreacio : new Date().toISOString(),
       dataModificacio: new Date().toISOString()
     };
@@ -156,7 +203,11 @@ export default function TasksView({ db, onAddTask, onUpdateTask, onDeleteTask }:
       if (t.projecteId !== selectedProjectIdFilter) return false;
     }
 
-    // 2. Filter out archived task unless requested
+    // 2. Optional intermediate block filter (only available within one project).
+    if (selectedProjectIdFilter !== 'all' && selectedBlockId !== 'all') {
+      if (selectedBlockId === 'none' ? !!t.blocId : t.blocId !== selectedBlockId) return false;
+    }
+    // 3. Filter out archived task unless requested
     if (!showArchived && t.estat === 'arxivada') {
       return false;
     }
@@ -241,7 +292,7 @@ export default function TasksView({ db, onAddTask, onUpdateTask, onDeleteTask }:
         </div>
         <div className="flex flex-wrap gap-1.5">
           <button
-            onClick={() => setSelectedProjectIdFilter('all')}
+            onClick={() => { setSelectedProjectIdFilter('all'); setSelectedBlockId('all'); }}
             className={`px-3.5 py-2.5 text-xs font-bold rounded-lg border transition cursor-pointer flex items-center gap-2 ${
               selectedProjectIdFilter === 'all'
                 ? 'bg-[#234e70] text-white border-[#234e70] shadow-xs'
@@ -263,7 +314,7 @@ export default function TasksView({ db, onAddTask, onUpdateTask, onDeleteTask }:
             return (
               <button
                 key={proj.id}
-                onClick={() => setSelectedProjectIdFilter(proj.id)}
+                onClick={() => { setSelectedProjectIdFilter(proj.id); setSelectedBlockId('all'); }}
                 className={`px-3.5 py-2.5 text-xs font-semibold rounded-lg border transition flex items-center gap-2 cursor-pointer ${
                   selectedProjectIdFilter === proj.id
                     ? 'bg-slate-900 text-white border-slate-900 shadow-xs font-bold'
@@ -322,6 +373,50 @@ export default function TasksView({ db, onAddTask, onUpdateTask, onDeleteTask }:
         </div>
       )}
 
+      {/* Optional intermediate structure: Projecte → Bloc de treball → Tasca */}
+      {activeProjectSelected && (
+        <section className="bg-white border border-slate-200 rounded-lg p-4 space-y-3" aria-label="Blocs de treball">
+          <div className="flex flex-wrap justify-between items-center gap-3">
+            <div><h3 className="text-sm font-semibold text-slate-900">Blocs de treball</h3>
+              <p className="text-xs text-slate-600 mt-1">Agrupa tasques per fase, lliurable o funcionalitat. És opcional.</p></div>
+            <button type="button" onClick={openCreateBlock} className="px-3 py-2 border border-slate-300 rounded-md text-xs font-semibold text-[#234e70]">+ Crear bloc</button>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={() => setSelectedBlockId('all')} className={`px-3 py-2 rounded-md border text-xs ${selectedBlockId === 'all' ? 'bg-[#edf3f8] border-[#234e70] font-semibold' : 'border-slate-200'}`}>Totes les tasques</button>
+            {blocs.filter(b => b.projecteId === activeProjectSelected.id).sort((a,b) => a.ordre - b.ordre).map(b => (
+              <div key={b.id} className="flex items-center border border-slate-200 rounded-md overflow-hidden">
+                <button type="button" onClick={() => setSelectedBlockId(b.id)} className={`px-3 py-2 text-xs ${selectedBlockId === b.id ? 'bg-[#edf3f8] font-semibold' : ''}`}>{b.nom} <span className="text-slate-500">({tasks.filter(t => t.blocId === b.id).length})</span></button>
+                <button type="button" onClick={() => openEditBlock(b)} className="px-2 py-2 text-xs border-l border-slate-200 text-slate-500" aria-label={`Editar bloc ${b.nom}`}><Edit3 className="w-3 h-3" /></button>
+                <button type="button" onClick={() => { if (window.confirm(`Vols eliminar el bloc ${b.nom}? Només es pot eliminar si no té tasques.`)) onDeleteBlock(b.id); }} className="px-2 py-2 text-xs border-l border-slate-200 text-slate-500" aria-label={`Eliminar bloc ${b.nom}`}><Trash2 className="w-3 h-3" /></button>
+              </div>
+            ))}
+            <button type="button" onClick={() => setSelectedBlockId('none')} className={`px-3 py-2 rounded-md border text-xs ${selectedBlockId === 'none' ? 'bg-[#edf3f8] border-[#234e70] font-semibold' : 'border-slate-200'}`}>Sense bloc</button>
+          </div>
+        </section>
+      )}
+      {blockFormOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-4">
+          <form onSubmit={saveBlock} className="bg-white rounded-lg shadow-xl border border-slate-200 p-5 w-full max-w-md space-y-4">
+            <h3 className="font-semibold text-slate-900">{editingBlock ? 'Editar bloc de treball' : 'Crear bloc de treball'}</h3>
+            <label className="text-xs font-medium text-slate-700 block">Nom del bloc *
+              <input required value={blockName} onChange={e=>setBlockName(e.target.value)} className="block w-full border border-slate-300 p-2 rounded-md mt-1" placeholder="Ex.: Automatització n8n" />
+            </label>
+            <label className="text-xs font-medium text-slate-700 block">Tipus
+              <select value={blockType} onChange={e=>setBlockType(e.target.value as WorkBlockType)} className="block w-full border border-slate-300 p-2 rounded-md mt-1">
+                <option value="fase">Fase</option><option value="lliurable">Lliurable</option><option value="funcionalitat">Funcionalitat</option>
+                <option value="manteniment">Manteniment</option><option value="altre">Altres</option>
+              </select>
+            </label>
+            <label className="text-xs font-medium text-slate-700 block">Descripció
+              <textarea rows={3} value={blockDescription} onChange={e=>setBlockDescription(e.target.value)} className="block w-full border border-slate-300 p-2 rounded-md mt-1" />
+            </label>
+            {blockError && <p className="text-xs text-red-700">{blockError}</p>}
+            <div className="flex justify-end gap-2"><button type="button" onClick={() => setBlockFormOpen(false)} className="px-3 py-2 border border-slate-300 rounded-md text-xs">Cancel·lar</button>
+              <button type="submit" className="px-3 py-2 bg-[#234e70] text-white rounded-md text-xs">Desar bloc</button></div>
+          </form>
+        </div>
+      )}
+
       {/* CREATE/EDIT MODAL OVERLAY */}
       {showForm && (
         <div className="fixed inset-0 bg-slate-900/60 z-50 flex items-center justify-center p-4 backdrop-blur-xs">
@@ -348,7 +443,7 @@ export default function TasksView({ db, onAddTask, onUpdateTask, onDeleteTask }:
                 <select
                   required
                   value={projecteId}
-                  onChange={e => setProjecteId(e.target.value)}
+                  onChange={e => { setProjecteId(e.target.value); setBlocId(''); }}
                   className="w-full text-xs border border-slate-200 rounded-lg p-2 bg-slate-50 cursor-pointer"
                 >
                   <option value="">-- Tria un projecte --</option>
@@ -358,6 +453,13 @@ export default function TasksView({ db, onAddTask, onUpdateTask, onDeleteTask }:
                 </select>
               </div>
 
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Bloc de treball (opcional)</label>
+                <select value={blocId} onChange={e => setBlocId(e.target.value)} className="w-full text-xs border border-slate-200 rounded-lg p-2 bg-white">
+                  <option value="">Sense bloc · tasca directament al projecte</option>
+                  {projectBlocks.map(b => <option key={b.id} value={b.id}>{b.nom} · {b.tipus}</option>)}
+                </select>
+              </div>
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">Nom descriptiu de la Tasca *</label>
                 <input
@@ -399,34 +501,44 @@ export default function TasksView({ db, onAddTask, onUpdateTask, onDeleteTask }:
               <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 space-y-3">
                 <div>
                   <h4 className="text-sm font-semibold text-slate-800">Pressupost d'aquesta tasca</h4>
-                  <p className="text-xs text-slate-600 mt-1">Escriu manualment l'interval realista: per exemple, de 9 a 11 hores. No es calcula a partir d'un import rodó.</p>
+                  <p className="text-xs text-slate-600 mt-1">Afegeix un o diversos trams. Pots combinar tarifes diferents i posar <strong>0 €/h</strong> quan la dedicació no sigui facturable.</p>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  <label className="text-xs font-medium text-slate-700">Mínim (h)
-                    <input type="number" min="0" step="0.25" value={horesMin} onChange={e => setHoresMin(e.target.value)}
-                      placeholder="9" className="block mt-1 w-full border border-slate-300 rounded-md p-2 bg-white" />
-                  </label>
-                  <label className="text-xs font-medium text-slate-700">Màxim (h)
-                    <input type="number" min="0" step="0.25" value={horesMax} onChange={e => setHoresMax(e.target.value)}
-                      placeholder="11" className="block mt-1 w-full border border-slate-300 rounded-md p-2 bg-white" />
-                  </label>
-                  <label className="text-xs font-medium text-slate-700">Tarifa ({db.settings.currency}/h)
-                    <input type="number" min="0.01" step="0.01" value={tarifaPressupost} onChange={e => setTarifaPressupost(e.target.value)}
-                      placeholder={String(projects.find(p => p.id === projecteId)?.tarifaHoraria ?? db.settings.defaultHourlyRate ?? 50)}
-                      className="block mt-1 w-full border border-slate-300 rounded-md p-2 bg-white" />
-                  </label>
-                </div>
-                <p className="text-xs text-slate-500">Si deixes la tarifa buida, s'aplica la tarifa del projecte o la general. No modifica les tarifes dels registres ja fitxats.</p>
-                {horesMin !== '' && horesMax !== '' && Number(horesMin) <= Number(horesMax) && (
-                  <div className="text-xs font-semibold text-[#234e70]">
-                    Import estimat: {formatCurrency(Number(horesMin) * Number(tarifaPressupost || projects.find(p => p.id === projecteId)?.tarifaHoraria || db.settings.defaultHourlyRate || 0), db.settings.currency)} – {formatCurrency(Number(horesMax) * Number(tarifaPressupost || projects.find(p => p.id === projecteId)?.tarifaHoraria || db.settings.defaultHourlyRate || 0), db.settings.currency)}
+                {draftRates.map((rate, index) => (
+                  <div key={rate.id} className="bg-white border border-slate-200 rounded-md p-3 space-y-2">
+                    <div className="flex justify-between items-center">
+                      <span className="text-xs font-semibold text-slate-700">Tram {index + 1}</span>
+                      <button type="button" onClick={() => setDraftRates(rows => rows.filter(r => r.id !== rate.id))} className="text-xs text-slate-500 hover:text-red-700">Eliminar tram</button>
+                    </div>
+                    <label className="text-xs text-slate-600 block">Concepte (opcional)
+                      <input type="text" value={rate.concepte} onChange={e => setDraftRates(rows => rows.map(r => r.id === rate.id ? {...r, concepte:e.target.value} : r))}
+                        placeholder="Anàlisi, desenvolupament, revisió..." className="block mt-1 w-full border border-slate-300 rounded-md p-2 bg-white" />
+                    </label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {([['horesMin', 'Mínim (h)'], ['horesMax', 'Màxim (h)'], ['tarifa', `${db.settings.currency}/h`]] as const).map(([field, title]) => (
+                        <label key={field} className="text-xs font-medium text-slate-700">{title}
+                          <input type="number" min="0" step={field === 'tarifa' ? '0.01' : '0.25'} value={rate[field]}
+                            onChange={e => setDraftRates(rows => rows.map(r => r.id === rate.id ? {...r, [field]:e.target.value} : r))}
+                            placeholder={field === 'tarifa' ? '0 o 50' : field === 'horesMin' ? '9' : '11'}
+                            className="block mt-1 w-full border border-slate-300 rounded-md p-2 bg-white" />
+                        </label>
+                      ))}
+                    </div>
+                    {rate.tarifa === '0' && <p className="text-xs text-slate-600">Aquest tram compta hores, però té un import de 0 €.</p>}
+                  </div>
+                ))}
+                <button type="button" onClick={() => setDraftRates(rows => [...rows, newDraft()])} className="text-xs font-semibold text-[#234e70] border border-slate-300 bg-white rounded-md px-3 py-2">+ Afegir tram d'hores</button>
+                {!draftRates.length && <p className="text-xs text-slate-500">Sense estimació: la tasca es pot desar, però no es podrà incloure en un pressupost fins que tingui algun tram.</p>}
+                {previewQuote && previewQuote.errors.length === 0 && (
+                  <div className="border-t border-slate-200 pt-3 text-xs font-semibold text-[#234e70] flex justify-between gap-2 flex-wrap">
+                    <span>{hoursRange(previewQuote.minHours, previewQuote.maxHours)}</span>
+                    <span>Total estimat: {quoteRange(previewQuote.minAmount, previewQuote.maxAmount, db.settings.currency)}</span>
                   </div>
                 )}
               </div>
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">Descripció addicional</label>
-                <input type="text" placeholder="Detalls a fer..." value={descripcio} onChange={e => setDescripcio(e.target.value)}
-                  className="w-full text-xs border border-slate-200 rounded-lg p-2 bg-slate-50" />
+                <textarea rows={4} placeholder="Detalls a fer... (pots escriure diverses línies)" value={descripcio} onChange={e => setDescripcio(e.target.value)}
+                  className="w-full text-xs border border-slate-200 rounded-lg p-2 bg-slate-50 resize-y" />
               </div>
 
               {formError && (
@@ -493,6 +605,7 @@ export default function TasksView({ db, onAddTask, onUpdateTask, onDeleteTask }:
                   timeEntries={timeEntries}
                   onEdit={startEdit}
                   onDelete={handleDeleteTask}
+                  blocs={blocs}
                   showAmountsByDefault={db.settings.showAmountsByDefault}
                   currency={db.settings.currency}
                   selectedProjectIdFilter={selectedProjectIdFilter}
@@ -529,6 +642,7 @@ export default function TasksView({ db, onAddTask, onUpdateTask, onDeleteTask }:
                   timeEntries={timeEntries}
                   onEdit={startEdit}
                   onDelete={handleDeleteTask}
+                  blocs={blocs}
                   showAmountsByDefault={db.settings.showAmountsByDefault}
                   currency={db.settings.currency}
                   selectedProjectIdFilter={selectedProjectIdFilter}
@@ -565,6 +679,7 @@ export default function TasksView({ db, onAddTask, onUpdateTask, onDeleteTask }:
                   timeEntries={timeEntries}
                   onEdit={startEdit}
                   onDelete={handleDeleteTask}
+                  blocs={blocs}
                   showAmountsByDefault={db.settings.showAmountsByDefault}
                   currency={db.settings.currency}
                   selectedProjectIdFilter={selectedProjectIdFilter}
@@ -601,6 +716,7 @@ export default function TasksView({ db, onAddTask, onUpdateTask, onDeleteTask }:
                     <div>
                       <span className="text-xs text-slate-400 font-mono font-semibold block uppercase">Projecte: {project?.nom || 'Desconegut'}</span>
                       <h3 className="font-sans font-bold text-slate-800 text-sm mt-0.5">{task.nom}</h3>
+                      {task.blocId && <p className="text-xs text-slate-500 mt-1">Bloc: {blocs.find(b => b.id === task.blocId)?.nom ?? 'No disponible'}</p>}
                     </div>
 
                     <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wider shrink-0 ${
@@ -617,7 +733,7 @@ export default function TasksView({ db, onAddTask, onUpdateTask, onDeleteTask }:
                   </div>
 
                   {task.descripcio && (
-                    <p className="text-xs text-slate-500 min-h-[32px] mb-3 italic">{task.descripcio}</p>
+                    <p className="text-xs whitespace-pre-line text-slate-500 min-h-[32px] mb-3 italic">{task.descripcio}</p>
                   )}
 
                   <div className="grid grid-cols-2 gap-2 bg-slate-50 border border-slate-100/50 rounded-lg p-3 my-4">
@@ -639,7 +755,7 @@ export default function TasksView({ db, onAddTask, onUpdateTask, onDeleteTask }:
 
                   {project && task.horesEstimadesMin !== undefined && task.horesEstimadesMax !== undefined && (
                     <div className="text-xs text-slate-600 border-t border-slate-100 pt-2">
-                      Estimació comercial: <strong>{hoursRange(task.horesEstimadesMin, task.horesEstimadesMax)}</strong> · {getTaskQuoteInputs(task, project, db.settings).hourlyRate} {db.settings.currency}/h
+                      Estimació comercial: <strong>{hoursRange(task.horesEstimadesMin, task.horesEstimadesMax)}</strong> · {getTaskQuoteInputs(task, project, db.settings).hourlyRate === null ? 'diverses tarifes' : `${getTaskQuoteInputs(task, project, db.settings).hourlyRate} ${db.settings.currency}/h`}
                     </div>
                   )}
                   {task.pressupostHores && (
@@ -684,6 +800,7 @@ interface TaskKanbanCardProps {
   timeEntries: any[];
   onEdit: (task: Task) => void;
   onDelete: (task: Task) => void;
+  blocs: WorkBlock[];
   showAmountsByDefault: boolean;
   currency: string;
   selectedProjectIdFilter: string;
@@ -697,6 +814,7 @@ function TaskKanbanCard({
   timeEntries,
   onEdit,
   onDelete,
+  blocs,
   showAmountsByDefault,
   currency,
   selectedProjectIdFilter,
@@ -735,8 +853,9 @@ function TaskKanbanCard({
           )}
         </div>
 
+        {task.blocId && <p className="text-[11px] text-slate-500 mt-1">Bloc: {blocs.find(b => b.id === task.blocId)?.nom ?? 'No disponible'}</p>}
         {task.descripcio && (
-          <p className="text-[11px] text-slate-450 mt-1.5 line-clamp-3 leading-relaxed border-l-2 border-slate-100 pl-2.5 italic">
+          <p className="whitespace-pre-line text-[11px] text-slate-450 mt-1.5 line-clamp-3 leading-relaxed border-l-2 border-slate-100 pl-2.5 italic">
             {task.descripcio}
           </p>
         )}

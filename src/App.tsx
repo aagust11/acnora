@@ -10,13 +10,16 @@ import {
   Client,
   Project,
   Task,
+  WorkBlock,
   Settings,
   ActiveSession,
-  AuditLogEntry
+  AuditLogEntry,
+  IssuedQuote
 } from './types';
 import { generateMockEntries } from './data/mockData';
 import { createEmptyDatabase, normalizeDatabase } from './utils/database';
-import { validateEntry } from './utils/timeUtils';
+import { validateEntry, localToday } from './utils/timeUtils';
+import { markQuoteAccepted, pruneExpiredQuotes } from './utils/issuedQuotes';
 
 // Import our views
 import DashboardView from './components/DashboardView';
@@ -75,7 +78,13 @@ export default function App() {
     const savedName = localStorage.getItem(LOCAL_STORAGE_NAME_KEY);
     if (saved) {
       try {
-        setDb(normalizeDatabase(JSON.parse(saved)));
+        const original = normalizeDatabase(JSON.parse(saved));
+        const current = pruneExpiredQuotes(original, localToday());
+        setDb(current);
+        if (current !== original) {
+          try { localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(current)); }
+          catch (_) { setStorageWarning('No s’han pogut purgar els pressupostos caducats del desament local. Exporta una còpia JSON.'); }
+        }
         if (savedName) setFileName(savedName);
       } catch (error) {
         console.error('No es poden carregar les dades locals', error);
@@ -88,6 +97,27 @@ export default function App() {
       setDb(createEmptyDatabase());
     }
   }, []);
+
+  // Cleanup on reopening and each minute while ACnora is open (no background worker).
+  useEffect(() => {
+    if (!db?.issuedQuotes?.length) return;
+    const prune = () => {
+      const cleaned = pruneExpiredQuotes(db, localToday());
+      if (cleaned === db) return;
+      try {
+        localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(cleaned));
+        setDb(cleaned);
+        setIsDirty(true);
+        setStorageWarning('');
+      } catch (error) {
+        console.error('No s’han pogut desar les caducitats', error);
+        setStorageWarning('No s’han pogut eliminar els pressupostos caducats de l’emmagatzematge. Revisa les còpies.');
+      }
+    };
+    prune();
+    const interval = setInterval(prune, 60_000);
+    return () => clearInterval(interval);
+  }, [db]);
 
   const persistLocally = (database: LocalDatabase) => {
     try {
@@ -139,7 +169,7 @@ export default function App() {
     newDb: LocalDatabase,
     meta?: {
       accio: string;
-      entitat: 'client' | 'projecte' | 'tasca' | 'registre' | 'configuració' | 'fitxer';
+      entitat: 'client' | 'projecte' | 'bloc' | 'tasca' | 'registre' | 'pressupost' | 'configuració' | 'fitxer';
       idEntitat: string;
       resum: string;
     }
@@ -165,7 +195,7 @@ export default function App() {
 
   // Importing a JSON replaces the active workspace (after confirmation in the file view).
   const handleLoadDb = (loadedDb: LocalDatabase, name: string, handle?: any) => {
-    const normalized = normalizeDatabase(loadedDb);
+    const normalized = pruneExpiredQuotes(normalizeDatabase(loadedDb), localToday());
     setDb(normalized);
     setFileName(name);
     setFileHandle(handle || null);
@@ -371,7 +401,7 @@ export default function App() {
   };
 
   const handleDeleteProject = (id: string) => {
-    if (db.tasks.some(t => t.projecteId === id) || db.timeEntries.some(e => e.projecteId === id) || db.activeSession?.projecteId === id) {
+    if (db.tasks.some(t => t.projecteId === id) || db.blocs.some(b => b.projecteId === id) || db.timeEntries.some(e => e.projecteId === id) || db.activeSession?.projecteId === id) {
       alert('Aquest projecte té tasques, hores o una sessió activa. Arxiva’l en lloc d’eliminar-lo.');
       return;
     }
@@ -382,6 +412,29 @@ export default function App() {
       entitat: 'projecte',
       idEntitat: id,
       resum: `Eliminat projecte comercial: "${name}".`
+    });
+  };
+
+  const handleAddBlock = (bloc: WorkBlock) => {
+    if (!db.projects.some(project => project.id === bloc.projecteId)) return;
+    commitDbChange({ ...db, blocs: [...db.blocs, bloc] }, {
+      accio: 'crear', entitat: 'bloc', idEntitat: bloc.id, resum: `Creat bloc de treball: ${bloc.nom}`,
+    });
+  };
+  const handleUpdateBlock = (bloc: WorkBlock) => {
+    const existing = db.blocs.find(b => b.id === bloc.id);
+    if (!existing || existing.projecteId !== bloc.projecteId) return;
+    commitDbChange({ ...db, blocs: db.blocs.map(b => b.id === bloc.id ? bloc : b) }, {
+      accio: 'editar', entitat: 'bloc', idEntitat: bloc.id, resum: `Modificat bloc de treball: ${bloc.nom}`,
+    });
+  };
+  const handleDeleteBlock = (id: string) => {
+    if (db.tasks.some(t => t.blocId === id)) {
+      alert('Aquest bloc conté tasques. Mou-les a un altre bloc o deixa-les sense bloc abans d’eliminar-lo.');
+      return;
+    }
+    commitDbChange({ ...db, blocs: db.blocs.filter(b => b.id !== id) }, {
+      accio: 'eliminar', entitat: 'bloc', idEntitat: id, resum: 'Eliminat bloc de treball sense tasques.',
     });
   };
 
@@ -507,6 +560,53 @@ export default function App() {
     });
   };
 
+  // Quotes are written atomically before updating UI so a storage quota failure never
+  // results in a visible 'issued' quote that has not actually been stored.
+  const saveIssuedQuoteChanges = (nextDb: LocalDatabase): boolean => {
+    try {
+      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(nextDb));
+      setDb(nextDb);
+      setIsDirty(true);
+      setStorageWarning('');
+      return true;
+    } catch (error) {
+      console.error('No es pot desar el pressupost', error);
+      setStorageWarning('No s’ha pogut desar el pressupost. No s’ha emès. Comprova l’espai disponible o exporta una còpia JSON.');
+      return false;
+    }
+  };
+
+  const handleIssueQuote = (quote: IssuedQuote): boolean => {
+    if (quote.validUntil < localToday() || quote.validUntil < quote.issueDate) return false;
+    if (db.issuedQuotes.some(q => q.reference.trim().toLowerCase() === quote.reference.trim().toLowerCase())) {
+      alert('Ja hi ha un pressupost emès amb aquesta referència. Introdueix-ne una de nova.');
+      return false;
+    }
+    const log: AuditLogEntry = {
+      id: `aud-q-${quote.id}`, timestamp: new Date().toISOString(), accio: 'emetre',
+      entitatAfectada: 'pressupost', idEntitat: quote.id,
+      resum: `Pressupost emès: ${quote.reference}. PDF immutable desat.`,
+    };
+    return saveIssuedQuoteChanges({
+      ...db,
+      issuedQuotes: [...db.issuedQuotes, quote],
+      auditLog: [...db.auditLog, log],
+    });
+  };
+
+  const handleAcceptQuote = (id: string): boolean => {
+    const quote = db.issuedQuotes.find(q => q.id === id);
+    if (!quote || quote.validUntil < localToday() || quote.status !== 'pendent') return false;
+    const next = db.issuedQuotes.map(q => q.id === id ? markQuoteAccepted(q, new Date().toISOString()) : q);
+    return saveIssuedQuoteChanges({ ...db, issuedQuotes: next });
+  };
+
+  const handleDeleteIssuedQuote = (id: string): boolean => {
+    if (!db.issuedQuotes.some(q => q.id === id)) return false;
+    const next = db.issuedQuotes.filter(q => q.id !== id);
+    return saveIssuedQuoteChanges({ ...db, issuedQuotes: next });
+  };
+
   // ---------------------------------------------------------------------------
   // NAVIGATION ROUTER PANEL RENDER
   // ---------------------------------------------------------------------------
@@ -572,6 +672,9 @@ export default function App() {
         return (
           <TasksView
             db={db}
+            onAddBlock={handleAddBlock}
+            onUpdateBlock={handleUpdateBlock}
+            onDeleteBlock={handleDeleteBlock}
             onAddTask={handleAddTask}
             onUpdateTask={handleUpdateTask}
             onDeleteTask={handleDeleteTask}
@@ -580,7 +683,7 @@ export default function App() {
       case 'Informes':
         return <ReportsView db={db} />;
       case 'Pressupostos':
-        return <QuotesView db={db} initialProjectId={quoteProjectId} onEditTasks={() => setCurrentView('Tasques')} />;
+        return <QuotesView db={db} initialProjectId={quoteProjectId} onEditTasks={() => setCurrentView('Tasques')} onIssueQuote={handleIssueQuote} onAcceptQuote={handleAcceptQuote} onDeleteQuote={handleDeleteIssuedQuote} />;
       case 'Configuració':
         return (
           <SettingsView

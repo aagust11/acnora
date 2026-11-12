@@ -104,3 +104,64 @@ test('No es pot generar un pressupost amb hores incoherents o sense tarifa', () 
   assert.equal(out.errors.length, 2);
   assert.equal(out.lines.length, 0);
 });
+
+
+test('Una tasca combina diferents tarifes i hores no facturables a 0 €/h', () => {
+  const task = { id: 't1', nom: 'Automatització', pressupostTrams: [
+    { id:'r1', concepte:'Desenvolupament', horesMin:9, horesMax:11, tarifa:50 },
+    { id:'r2', concepte:'Reunió no facturable', horesMin:1, horesMax:2, tarifa:0 },
+    { id:'r3', concepte:'Revisió', horesMin:2, horesMax:3, tarifa:30 },
+  ]};
+  const summary = buildQuoteSummary([task], { id:'p1', tarifaHoraria:50 }, { defaultHourlyRate:40, currency:'EUR' });
+  assert.equal(summary.errors.length, 0);
+  assert.equal(summary.minHours, 12);
+  assert.equal(summary.maxHours, 16);
+  assert.equal(summary.minAmount, 510);
+  assert.equal(summary.maxAmount, 640);
+  assert.equal(summary.lines[0].trams[1].minAmount, 0);
+  assert.equal(summary.lines[0].hourlyRate, null);
+});
+
+test('Un pressupost no accepta trams parcials, negatius o sense hores', () => {
+  const project = { id:'p1' };
+  const settings = { defaultHourlyRate:50 };
+  for (const trams of [[{id:'a',horesMin:2,horesMax:1,tarifa:50}], [{id:'a',horesMin:1,horesMax:2,tarifa:-1}], [{id:'a',horesMin:0,horesMax:0,tarifa:0}], []]) {
+    const summary = buildQuoteSummary([{id:'t',nom:'T',pressupostTrams:trams}],project,settings);
+    assert.equal(summary.errors.length,1);
+  }
+});
+
+test('Els JSON anteriors sense blocs ni trams es continuen carregant', () => {
+  const before = { clients:[], projects:[{id:'p'}], tasks:[{id:'t',projecteId:'p',pressupostHores:4}], timeEntries:[] };
+  const after = normalizeDatabase(before);
+  assert.equal(after.blocs.length,0);
+  assert.equal(after.tasks[0].pressupostHores,4);
+  const quote = buildQuoteSummary(after.tasks,after.projects[0],{defaultHourlyRate:30});
+  assert.equal(quote.minAmount,120);
+});
+
+const { isQuoteExpired, pruneExpiredQuotes, markQuoteAccepted } = loadUtility('src/utils/issuedQuotes.ts');
+
+test('Pressupost pendent expira només DESPRÉS de l’últim dia de validesa', () => {
+  const q = { id: 'q1', status: 'pendent', validUntil: '2026-11-20' };
+  assert.equal(isQuoteExpired(q, '2026-11-19'), false);
+  assert.equal(isQuoteExpired(q, '2026-11-20'), false);
+  assert.equal(isQuoteExpired(q, '2026-11-21'), true);
+});
+
+test('Els pressupostos acceptats conserven exactament el PDF en caducar', () => {
+  const issued = { id: 'q1', status: 'pendent', validUntil: '2026-11-20', pdfDataUri: 'data:application/pdf;base64,QUJD' };
+  const accepted = markQuoteAccepted(issued, '2026-11-20T17:00:00Z');
+  assert.equal(accepted.status, 'acceptat');
+  assert.equal(accepted.pdfDataUri, issued.pdfDataUri);
+  const db = normalizeDatabase({ clients: [], projects: [], timeEntries: [], issuedQuotes: [issued, accepted] });
+  const after = pruneExpiredQuotes(db, '2026-11-21');
+  assert.equal(after.issuedQuotes.length, 1);
+  assert.equal(after.issuedQuotes[0].pdfDataUri, issued.pdfDataUri);
+  assert.equal(after.issuedQuotes[0].status, 'acceptat');
+});
+
+test('Pressupostos antics sense historial segueixen sent compatibles', () => {
+  const db = normalizeDatabase({ clients: [], projects: [], timeEntries: [] });
+  assert.equal(db.issuedQuotes.length, 0);
+});

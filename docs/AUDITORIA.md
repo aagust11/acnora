@@ -67,3 +67,11 @@
 - Si s'esborra l'emmagatzematge del navegador i no existeix un JSON extern, **es perden les dades**.
 - Una app local al navegador **no és equivalent a una aplicació SaaS corporativa amb servidor i garanties de disponibilitat**.
 - **CI verificat:** GitHub Actions ha executat correctament `npm ci`, comprovació TypeScript, sis proves unitàries, compilació Vite i desplegament a Pages (12/11/2026). **Pendent:** comprovació visual i proves E2E completes al navegador.
+
+## Evolució v1.2
+
+- Blocs de treball entre projectes i tasques, opcionals i compatibles amb JSON antics.
+- Trams de pressupost amb intervals d'hores i diverses tarifes (inclosa 0 €/h).
+- Camps comercials multilínia editables, preservats en PDF.
+- Historial de pressupostos emesos amb còpia immutable dels bytes originals del PDF, re-descàrrega, acceptació manual, eliminació manual i purga de propostes pendents caducades.
+- Les còpies PDF desades en Base64 augmenten el JSON i poden assolir els límits del navegador. No hi ha purga remota quan l'aplicació és tancada. Recomanació a llarg termini: IndexedDB o backend amb estratègia de backup i integritat.
