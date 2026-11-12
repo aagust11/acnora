@@ -143,7 +143,22 @@ export function generateQuotePDF(
   };
   drawHeader();
 
+  const showBlockHeadings = lines.some(line => !!line.task.blocId);
+  let previousBlockKey: string | null = null;
   lines.forEach((line, index) => {
+    const blockKey = line.task.blocId || '';
+    if (showBlockHeadings && blockKey !== previousBlockKey) {
+      pageBreak(20);
+      doc.setFillColor(246, 249, 252);
+      doc.rect(left, y - 2, content, 9, 'F');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(9);
+      doc.setTextColor(...dark);
+      const sectionTitle = safe(line.blocNom || 'Tasques sense bloc');
+      doc.text(doc.splitTextToSize(sectionTitle, content - 8)[0] || sectionTitle, left + 3, y + 3.5);
+      y += 11;
+    }
+    previousBlockKey = blockKey;
     const rowTitle = wrapPreserveLines(line.task.nom, Math.max(40, titleWidth));
     const rowDesc = line.task.descripcio ? wrapPreserveLines(line.task.descripcio, Math.max(40, titleWidth)) : [];
     const textHeight = Math.max(7, rowTitle.length * 4.3 + (rowDesc.length ? rowDesc.length * 3.7 + 1 : 0) + 3);

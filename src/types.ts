@@ -157,6 +157,8 @@ export interface IssuedQuote {
     client: Client;
     project: Project;
     tasks: Task[];
+    blocks?: WorkBlock[];
+    orderedTaskIds?: string[];
     settings: Settings;
     text: {
       taxes: string;

@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, FileText, AlertTriangle, Download, Info, Trash2 } from 'lucide-react';
+import { CheckCircle2, FileText, AlertTriangle, Download, Info, Trash2, ArrowUp, ArrowDown, RotateCcw } from 'lucide-react';
 import type { LocalDatabase, IssuedQuote } from '../types';
 import { buildQuoteSummary, getTaskQuoteInputs, hoursRange, quoteRange } from '../utils/quotation';
 import { generateQuotePDF, DEFAULT_TAX_NOTE, DEFAULT_ESTIMATE_NOTE, DEFAULT_CONDITIONS } from '../utils/quotePdf';
 import { downloadIssuedQuote } from '../utils/issuedQuotes';
 import { localToday } from '../utils/timeUtils';
+import { orderQuoteTasks, moveQuoteTask, moveQuoteGroup, quoteGroupKey, quoteGroupLabel } from '../utils/quoteOrdering';
 
 interface QuotesViewProps {
   db: LocalDatabase;
@@ -18,6 +19,7 @@ interface QuotesViewProps {
 export default function QuotesView({ db, initialProjectId, onEditTasks, onIssueQuote, onAcceptQuote, onDeleteQuote }: QuotesViewProps) {
   const [projectId, setProjectId] = useState(initialProjectId || '');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [manualOrder, setManualOrder] = useState<string[]>([]);
   const [showHours, setShowHours] = useState(true);
   const [showHourlyRates, setShowHourlyRates] = useState(true);
   const [issueDate, setIssueDate] = useState(localToday());
@@ -31,11 +33,9 @@ export default function QuotesView({ db, initialProjectId, onEditTasks, onIssueQ
 
   const project = db.projects.find(p => p.id === projectId);
   const client = db.clients.find(c => c.id === project?.clientId);
-  const projectTasks = db.tasks.filter(t => t.projecteId === projectId && t.estat !== 'arxivada').sort((a, b) => {
-    const x = db.blocs.find(block => block.id === a.blocId)?.ordre ?? Number.MAX_SAFE_INTEGER;
-    const y = db.blocs.find(block => block.id === b.blocId)?.ordre ?? Number.MAX_SAFE_INTEGER;
-    return x - y || (a.blocId || '').localeCompare(b.blocId || '') || a.nom.localeCompare(b.nom);
-  });
+  const projectTasks = db.tasks.filter(t => t.projecteId === projectId && t.estat !== 'arxivada');
+  const orderedTasks = orderQuoteTasks(projectTasks, db.blocs, manualOrder);
+  const displayedGroups = [...new Set(orderedTasks.map(quoteGroupKey))];
 
   useEffect(() => {
     if (initialProjectId) setProjectId(initialProjectId);
@@ -43,13 +43,21 @@ export default function QuotesView({ db, initialProjectId, onEditTasks, onIssueQ
 
   useEffect(() => {
     setSelectedIds(projectTasks.map(t => t.id));
+    setManualOrder([]);
     setError('');
   }, [projectId]);
 
-  const selectedTasks = projectTasks.filter(t => selectedIds.includes(t.id));
+  const selectedTasks = orderedTasks.filter(t => selectedIds.includes(t.id));
   const summary = useMemo(
-    () => project ? buildQuoteSummary(selectedTasks, project, db.settings) : null,
-    [selectedTasks, project, db.settings]
+    () => {
+      if (!project) return null;
+      const result = buildQuoteSummary(selectedTasks, project, db.settings);
+      result.lines = result.lines.map(line => ({ ...line,
+        blocNom: quoteGroupLabel(quoteGroupKey(line.task), db.blocs),
+      }));
+      return result;
+    },
+    [selectedTasks, project, db.settings, db.blocs]
   );
   const currency = db.settings.currency;
   const canExport = !!project && !!client && !!summary && summary.lines.length > 0 && summary.errors.length === 0 && !!quoteNumber.trim() && !!issueDate && !!validUntil && validUntil >= issueDate && validUntil >= localToday() && !db.issuedQuotes.some(q => q.reference.toLowerCase() === quoteNumber.trim().toLowerCase());
@@ -67,6 +75,8 @@ export default function QuotesView({ db, initialProjectId, onEditTasks, onIssueQ
       // Snapshot all commercial information and retain exact PDF bytes; never rebuild an issued document.
       const snapshot = JSON.parse(JSON.stringify({
         client, project, tasks: summary.lines.map(l => l.task), settings: db.settings,
+        blocks: db.blocs.filter(b => b.projecteId === project.id),
+        orderedTaskIds: summary.lines.map(l => l.task.id),
         text: { taxes: taxNote, estimate: estimateNote, conditions, observations },
         showHours, showHourlyRates,
       })) as IssuedQuote['snapshot'];
@@ -129,9 +139,15 @@ export default function QuotesView({ db, initialProjectId, onEditTasks, onIssueQ
         <div className="p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-slate-200">
           <div>
             <h3 className="font-semibold text-slate-900">Tasques incloses</h3>
-            <p className="text-sm text-slate-600 mt-1">Marca només les tasques que formen part de l’oferta. Les xifres són estimacions, no hores ja treballades.</p>
+            <p className="text-sm text-slate-600 mt-1">Ordenat inicialment per nom del bloc de treball i després per tasca. Mou els blocs i les tasques amb les fletxes; l’ordre triat es reflectirà al PDF.</p>
           </div>
-          {onEditTasks && <button onClick={onEditTasks} className="border border-slate-300 rounded-md px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">Editar tasques</button>}
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={() => setManualOrder([])} disabled={!manualOrder.length}
+              className="border border-slate-300 rounded-md px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40 inline-flex items-center gap-2">
+              <RotateCcw className="w-4 h-4" /> Ordenar alfabèticament
+            </button>
+            {onEditTasks && <button onClick={onEditTasks} className="border border-slate-300 rounded-md px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">Editar tasques</button>}
+          </div>
         </div>
         {projectTasks.length === 0 ? (
           <div className="px-5 py-8 text-sm text-slate-600">Aquest projecte no té tasques actives. Crea’n una a l’apartat Tasques i defineix-hi les hores mínimes, màximes i la tarifa.</div>
@@ -139,15 +155,32 @@ export default function QuotesView({ db, initialProjectId, onEditTasks, onIssueQ
           <div className="overflow-x-auto">
             <table className="w-full text-sm border-collapse min-w-[700px]">
               <thead className="bg-slate-50 text-slate-600 text-xs">
-                <tr><th className="text-left p-3">Incloure</th><th className="text-left p-3">Tasca</th><th className="text-right p-3">Estimació manual</th><th className="text-right p-3">Tarifa</th><th className="text-right p-3">Import estimat</th></tr>
+                <tr><th className="text-left p-3">Incloure</th><th className="text-left p-3">Tasca</th><th className="text-center p-3">Ordre</th><th className="text-right p-3">Estimació manual</th><th className="text-right p-3">Tarifa</th><th className="text-right p-3">Import estimat</th></tr>
               </thead>
               <tbody>
-                {projectTasks.map(task => {
+                {orderedTasks.map((task, index) => {
+                  const currentGroup = quoteGroupKey(task);
+                  const groupTasks = orderedTasks.filter(t => quoteGroupKey(t) === currentGroup);
+                  const taskPosition = groupTasks.findIndex(t => t.id === task.id);
+                  const groupPosition = displayedGroups.indexOf(currentGroup);
+                  const isGroupStart = index === 0 || quoteGroupKey(orderedTasks[index - 1]) !== currentGroup;
                   const values = getTaskQuoteInputs(task, project, db.settings);
                   const one = buildQuoteSummary([task], project, db.settings);
                   const valid = one.errors.length === 0 && one.lines.length === 1;
                   const quoted = one.lines[0];
-                  return <tr key={task.id} className="border-t border-slate-100">
+                  return <React.Fragment key={task.id}>
+                    {isGroupStart && <tr className="bg-[#edf3f8] border-t border-slate-200">
+                      <td colSpan={6} className="px-3 py-2">
+                        <div className="flex flex-wrap justify-between items-center gap-2">
+                          <span className="text-sm font-semibold text-[#234e70]">{quoteGroupLabel(currentGroup, db.blocs)}</span>
+                          <div className="inline-flex gap-1">
+                            <button type="button" aria-label={`Pujar bloc ${quoteGroupLabel(currentGroup, db.blocs)}`} title="Pujar bloc" disabled={groupPosition === 0} onClick={() => setManualOrder(moveQuoteGroup(projectTasks, db.blocs, manualOrder, currentGroup, -1))} className="rounded border border-slate-300 bg-white p-1.5 disabled:opacity-30 hover:bg-slate-50"><ArrowUp className="w-4 h-4" /></button>
+                            <button type="button" aria-label={`Baixar bloc ${quoteGroupLabel(currentGroup, db.blocs)}`} title="Baixar bloc" disabled={groupPosition === displayedGroups.length - 1} onClick={() => setManualOrder(moveQuoteGroup(projectTasks, db.blocs, manualOrder, currentGroup, 1))} className="rounded border border-slate-300 bg-white p-1.5 disabled:opacity-30 hover:bg-slate-50"><ArrowDown className="w-4 h-4" /></button>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>}
+                    <tr className="border-t border-slate-100">
                     <td className="px-3 py-3"><input type="checkbox" checked={selectedIds.includes(task.id)} onChange={e => setSelectedIds(ids => e.target.checked ? [...ids, task.id] : ids.filter(id => id !== task.id))} aria-label={`Incloure ${task.nom}`} className="w-4 h-4 accent-[#234e70]" /></td>
                     <td className="px-3 py-3">
                       {task.blocId && <div className="text-xs font-medium text-[#234e70] mb-1">{db.blocs.find(b=>b.id===task.blocId)?.nom || 'Bloc desconegut'}</div>}
@@ -157,10 +190,15 @@ export default function QuotesView({ db, initialProjectId, onEditTasks, onIssueQ
                         {values.trams.map(t => <div key={t.id}>{t.concepte || 'Tram'}: {hoursRange(t.horesMin,t.horesMax)} × {quoteRange(t.tarifa,t.tarifa,currency)}/h</div>)}
                       </div>}
                     </td>
+                    <td className="px-3 py-3 text-center whitespace-nowrap">
+                      <button type="button" title="Pujar tasca" aria-label={`Pujar tasca ${task.nom}`} disabled={taskPosition === 0} onClick={() => setManualOrder(moveQuoteTask(projectTasks, db.blocs, manualOrder, task.id, -1))} className="inline-flex rounded border border-slate-300 p-1.5 mr-1 disabled:opacity-30 hover:bg-slate-50"><ArrowUp className="w-4 h-4" /></button>
+                      <button type="button" title="Baixar tasca" aria-label={`Baixar tasca ${task.nom}`} disabled={taskPosition === groupTasks.length - 1} onClick={() => setManualOrder(moveQuoteTask(projectTasks, db.blocs, manualOrder, task.id, 1))} className="inline-flex rounded border border-slate-300 p-1.5 disabled:opacity-30 hover:bg-slate-50"><ArrowDown className="w-4 h-4" /></button>
+                    </td>
                     <td className="px-3 py-3 text-right tabular-nums">{values.minHours === undefined || values.maxHours === undefined ? <span className="text-amber-700">Pendent</span> : hoursRange(values.minHours, values.maxHours)}</td>
                     <td className="px-3 py-3 text-right tabular-nums">{values.hourlyRate === null ? <span className="text-slate-600">Diverses tarifes</span> : quoteRange(values.hourlyRate, values.hourlyRate, currency)}</td>
                     <td className="px-3 py-3 text-right tabular-nums font-medium">{valid ? quoteRange(quoted.minAmount, quoted.maxAmount, currency) : <span className="text-amber-700">Per completar</span>}</td>
-                  </tr>;
+                    </tr>
+                  </React.Fragment>;
                 })}
               </tbody>
             </table>

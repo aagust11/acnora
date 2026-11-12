@@ -6,6 +6,7 @@ export interface QuoteRateLine extends QuoteRateBand {
 }
 export interface QuoteLine {
   task: Task;
+  blocNom?: string;
   minHours: number;
   maxHours: number;
   hourlyRate: number | null; // null means the task has multiple tariffs

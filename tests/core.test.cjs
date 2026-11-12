@@ -165,3 +165,28 @@ test('Pressupostos antics sense historial segueixen sent compatibles', () => {
   const db = normalizeDatabase({ clients: [], projects: [], timeEntries: [] });
   assert.equal(db.issuedQuotes.length, 0);
 });
+
+
+const { orderQuoteTasks, moveQuoteTask, moveQuoteGroup } = loadUtility('src/utils/quoteOrdering.ts');
+const task = (id, nom, blocId) => ({id, nom, blocId});
+const groups = [{id:'bz',nom:'Zeta'},{id:'ba',nom:'Anàlisi'}];
+const quoteTasks = [task('a','Zoologia','ba'),task('b','Altres','bz'),task('c','Anàlisi','ba'),task('d','Tasca lliure')];
+
+test('Ordena per nom de bloc i per tasca, sense bloc al final', () => {
+  assert.equal(orderQuoteTasks(quoteTasks, groups).map(t => t.id).join(','), 'c,a,b,d');
+});
+test('Permet moure blocs sencers mantenint les tasques agrupades', () => {
+  const moved = moveQuoteGroup(quoteTasks, groups, [], 'bz', -1);
+  assert.equal(orderQuoteTasks(quoteTasks, groups, moved).map(t => t.id).join(','), 'b,c,a,d');
+});
+test('Permet moure tasques únicament dins del mateix bloc', () => {
+  const moved = moveQuoteTask(quoteTasks, groups, [], 'a', -1);
+  assert.equal(orderQuoteTasks(quoteTasks, groups, moved).map(t => t.id).join(','), 'a,c,b,d');
+  const unchanged = moveQuoteTask(quoteTasks, groups, moved, 'a', -1);
+  assert.equal(orderQuoteTasks(quoteTasks, groups, unchanged).map(t => t.id).join(','), 'a,c,b,d');
+});
+test('Una nova tasca respecta l’ordre manual existent', () => {
+  const moved = moveQuoteGroup(quoteTasks, groups, [], 'bz', -1);
+  const expanded = [...quoteTasks, task('e','Bona nit','bz')];
+  assert.equal(orderQuoteTasks(expanded, groups, moved).map(t => t.id).join(','), 'b,e,c,a,d');
+});
