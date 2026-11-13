@@ -1,13 +1,16 @@
 import { localToday } from '../utils/timeUtils';
 import React, { useState, useEffect } from 'react';
 import { LocalDatabase, Client, Project, Task, ActiveSession } from '../types';
-import { Play, Square, AlertTriangle, Clock, Info, Check } from 'lucide-react';
+import { Play, Pause, Square, AlertTriangle, Clock, Info, Check } from 'lucide-react';
 import { formatDuration } from '../utils/timeUtils';
+import { isSessionPaused, sessionPausedMs, sessionWorkedMs } from '../utils/sessionPause';
 
 interface ChronometerViewProps {
   db: LocalDatabase;
   onStartSession: (session: ActiveSession) => void;
   onStopSession: (description: string, notes: string) => void;
+  onPauseSession: () => void;
+  onResumeSession: () => void;
   onUpdateActiveSession: (session: ActiveSession) => void;
   onUpdateTaskNotes: (taskId: string, notes: string) => void;
 }
@@ -16,6 +19,8 @@ export default function ChronometerView({
   db,
   onStartSession,
   onStopSession,
+  onPauseSession,
+  onResumeSession,
   onUpdateActiveSession,
   onUpdateTaskNotes
 }: ChronometerViewProps) {
@@ -65,8 +70,7 @@ export default function ChronometerView({
     if (!activeSession) return;
 
     const computeDuration = () => {
-      const ms = Date.now() - activeSession.startedTimestamp;
-      setTickingMins(Math.max(0, Math.floor(ms / 60000)));
+      setTickingMins(Math.floor(sessionWorkedMs(activeSession) / 60000));
     };
     computeDuration();
 
@@ -154,22 +158,24 @@ export default function ChronometerView({
     const sessTask = activeSession.tascaId ? tasks.find(t => t.id === activeSession.tascaId) : null;
 
     // Check if session exceeds maximum suspicious duration (e.g., default 8h or settings.maxActiveSessionHours)
+    const paused = isSessionPaused(activeSession);
+    const pauseMins = Math.floor(sessionPausedMs(activeSession) / 60000);
     const tooLong = tickingMins / 60 > (db.settings.maxActiveSessionHours || 10);
 
     return (
       <div className="bg-white rounded-lg shadow-sm border border-slate-100 p-6 space-y-6">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-100 pb-4">
           <div className="flex items-center gap-3">
-            <div className="w-3 h-3 bg-emerald-500 rounded-full " />
+            <div className={`w-3 h-3 rounded-full ${paused ? 'bg-amber-500' : 'bg-emerald-500'}`} />
             <div>
-              <h2 className="text-base font-sans font-semibold text-slate-800">Sessió de temps en execució...</h2>
+              <h2 className="text-base font-sans font-semibold text-slate-800">{paused ? 'Sessió en pausa' : 'Sessió de temps en execució'}</h2>
               <p className="text-xs text-slate-400 mt-0.5 font-mono">Iniciada a les {activeSession.horaInici} ({activeSession.data})</p>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
-            <span className="text-xs bg-emerald-50 text-emerald-700 font-bold px-3 py-1 rounded-full uppercase tracking-wider">
-              En curs
+            <span className={`text-xs font-semibold px-3 py-1 rounded-md ${paused ? 'bg-amber-50 text-amber-800' : 'bg-emerald-50 text-emerald-800'}`}>
+              {paused ? 'Pausada' : 'En curs'}
             </span>
             {tooLong && (
               <span className="text-xs bg-amber-50 text-amber-700 font-bold px-3 py-1 rounded-full flex items-center gap-1">
@@ -253,7 +259,8 @@ export default function ChronometerView({
               <div className="text-4xl font-mono font-bold text-slate-800 tracking-tight">
                 {formatDuration(tickingMins, 'clock')}
               </div>
-              <p className="text-xs text-slate-400 uppercase tracking-wide font-semibold">cronòmetre en marxa</p>
+              <p className="text-xs text-slate-500 font-medium">{paused ? 'Temps treballat · comptador aturat' : 'Temps treballat · comptador en marxa'}</p>
+              {pauseMins > 0 && <p className="text-xs text-slate-500">Pauses acumulades: {formatDuration(pauseMins, 'clock')}</p>}
             </div>
 
             <div className="w-full space-y-2 pt-4">
@@ -269,6 +276,15 @@ export default function ChronometerView({
                 )}
               </div>
               
+              <button
+                type="button"
+                onClick={paused ? onResumeSession : onPauseSession}
+                id="btn-pause-resume-active-session"
+                className={`w-full border font-semibold text-sm py-2.5 rounded-md flex items-center justify-center gap-2 ${paused ? 'bg-[#234e70] hover:bg-[#1b3f5c] text-white border-[#234e70]' : 'bg-white text-[#234e70] border-[#234e70] hover:bg-slate-50'}`}
+              >
+                {paused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
+                {paused ? 'Reprendre sessió' : 'Pausar sessió'}
+              </button>
               <button
                 onClick={handleStop}
                 id="btn-stop-active-session"
@@ -458,7 +474,7 @@ export default function ChronometerView({
                 </p>
               </div>
               <p>
-                A la finalització, quan prems <span className="font-semibold">Aturar</span>, la durada total es calcula en minuts i s’arrodoneix l’import de facturació multiplicat per la teva tarifa.
+                Pots pausar i reprendre la sessió tantes vegades com necessitis. Les pauses no s'inclouen en el temps treballat ni en l'import facturable. Per finalitzar, prem <span className="font-semibold">Aturar</span>.
               </p>
             </div>
           </div>

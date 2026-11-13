@@ -7,6 +7,7 @@ import {
   AlertTriangle,
   Play,
   Square,
+  Pause,
   TrendingUp,
   Briefcase,
   Users,
@@ -22,15 +23,18 @@ import {
   isThisMonth,
   validateEntry
 } from '../utils/timeUtils';
+import { isSessionPaused, sessionPausedMs, sessionWorkedMs } from '../utils/sessionPause';
 
 interface DashboardViewProps {
   db: LocalDatabase;
   onNavigate: (view: string) => void;
   onStopSession: (description: string, notes: string) => void;
+  onPauseSession: () => void;
+  onResumeSession: () => void;
   onUpdateActiveSession: (session: ActiveSession) => void;
 }
 
-export default function DashboardView({ db, onNavigate, onStopSession, onUpdateActiveSession }: DashboardViewProps) {
+export default function DashboardView({ db, onNavigate, onStopSession, onPauseSession, onResumeSession, onUpdateActiveSession }: DashboardViewProps) {
   const { timeEntries, projects, clients, tasks, activeSession } = db;
   const [elapsedMins, setElapsedMins] = useState(0);
   const [sessionDesc, setSessionDesc] = useState('');
@@ -42,8 +46,7 @@ export default function DashboardView({ db, onNavigate, onStopSession, onUpdateA
     
     // Initial sync
     const computeElapsed = () => {
-      const elapsedMs = Date.now() - activeSession.startedTimestamp;
-      setElapsedMins(Math.max(0, Math.floor(elapsedMs / 60000)));
+      setElapsedMins(Math.floor(sessionWorkedMs(activeSession) / 60000));
     };
     computeElapsed();
 
@@ -150,15 +153,15 @@ export default function DashboardView({ db, onNavigate, onStopSession, onUpdateA
       
       {/* Active Session Ticker */}
       {activeSession && (
-        <div className="bg-emerald-50 border border-emerald-100 rounded-lg p-5 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 ">
+          <div className={`rounded-lg border p-5 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 ${isSessionPaused(activeSession) ? 'bg-amber-50 border-amber-200' : 'bg-emerald-50 border-emerald-100'}`}>
           <div className="flex items-center gap-4">
-            <div className="w-12 h-12 bg-emerald-500 rounded-full flex items-center justify-center text-white shrink-0">
+            <div className={`w-12 h-12 rounded-md flex items-center justify-center text-white shrink-0 ${isSessionPaused(activeSession) ? 'bg-amber-600' : 'bg-emerald-600'}`}>
               <Clock className="w-6 h-6 " style={{ animationDuration: '8s' }} />
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <span className="text-xs bg-emerald-200 text-emerald-800 font-bold px-2 py-0.5 rounded uppercase tracking-wider">
-                  Sessió En Curs
+                <span className={`text-xs font-semibold px-2 py-0.5 rounded ${isSessionPaused(activeSession) ? 'bg-amber-100 text-amber-900' : 'bg-emerald-100 text-emerald-900'}`}>
+                  {isSessionPaused(activeSession) ? 'Sessió en pausa' : 'Sessió en curs'}
                 </span>
                 <span className="text-xs text-slate-500 font-mono mt-0.5">
                   Iniciada a les {activeSession.horaInici}
@@ -171,7 +174,7 @@ export default function DashboardView({ db, onNavigate, onStopSession, onUpdateA
                 </span>
               </h3>
               <div className="mt-2 w-full max-w-md">
-                <label className="block text-[11px] uppercase font-bold text-emerald-800 font-sans tracking-tight mb-0.5">Què estàs fent ara mateix?</label>
+                <label className="block text-[11px] font-medium text-slate-700 mb-1">Descripció de la sessió</label>
                 <input
                   type="text"
                   placeholder="Escriu la teva descripció d'activitat en temps real..."
@@ -188,9 +191,20 @@ export default function DashboardView({ db, onNavigate, onStopSession, onUpdateA
               <div className="text-2xl font-mono font-bold text-slate-900">
                 {formatDuration(elapsedMins, 'clock')}
               </div>
-              <div className="text-xs text-slate-400 uppercase tracking-tight font-medium">Temps transcorregut</div>
+              <div className="text-xs text-slate-600 font-medium">Temps treballat</div>
+              {sessionPausedMs(activeSession) >= 60000 && <div className="text-xs text-slate-500">Pausa: {formatDuration(Math.floor(sessionPausedMs(activeSession) / 60000), 'clock')}</div>}
             </div>
 
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={isSessionPaused(activeSession) ? onResumeSession : onPauseSession}
+                id="btn-pause-resume-dashboard"
+                className="bg-white text-[#234e70] border border-[#234e70] font-medium text-xs px-4 py-2 rounded-md flex items-center gap-2"
+              >
+                {isSessionPaused(activeSession) ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
+                {isSessionPaused(activeSession) ? 'Reprendre' : 'Pausar'}
+              </button>
             <button
               onClick={() => onStopSession(activeSession.descripcio || '', activeSession.notes || '')}
               id="btn-stop-session-dashboard"
@@ -199,6 +213,7 @@ export default function DashboardView({ db, onNavigate, onStopSession, onUpdateA
               <Square className="w-4 h-4 fill-white" />
               Aturar sessió
             </button>
+            </div>
           </div>
         </div>
       )}

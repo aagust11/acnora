@@ -183,8 +183,16 @@ export default function RecordsView({ db, onAddEntry, onUpdateEntry, onDeleteEnt
     const horaFi = editFormData.horaFi || original.horaFi;
     
     let mins = original.duradaMinuts;
-    if (horaInici && horaFi) {
-      mins = calculateMinutes(horaInici, horaFi);
+    const editedTimes = data !== original.data || horaInici !== original.horaInici || horaFi !== original.horaFi;
+    if (editedTimes && horaInici && horaFi) {
+      // Preserve paused time for timer-generated entries; notes/rate edits must not erase it.
+      let wallMinutes = calculateMinutes(horaInici, horaFi);
+      if (original.dataFi && original.dataFi > data) {
+        const days = Math.round((new Date(original.dataFi + 'T00:00:00').getTime() - new Date(data + 'T00:00:00').getTime()) / 86400000);
+        wallMinutes += days * 1440;
+      }
+      mins = Math.max(0, wallMinutes - (original.pausaSegons ?? 0) / 60);
+      mins = Math.floor(mins);
     }
 
     const isFacturable = editFormData.facturable !== undefined ? editFormData.facturable : original.facturable;
@@ -707,7 +715,8 @@ export default function RecordsView({ db, onAddEntry, onUpdateEntry, onDeleteEnt
                         ) : (
                           <div>
                             <div>{(entry.duradaMinuts / 60).toFixed(2)} h</div>
-                            <div className="text-xs text-slate-400">{entry.duradaMinuts} min</div>
+                            <div className="text-xs text-slate-500">{entry.duradaMinuts} min de treball</div>
+                            {!!entry.pausaSegons && <div className="text-xs text-amber-700">Pausa: {Math.round(entry.pausaSegons / 60)} min</div>}
                           </div>
                         )}
                       </td>

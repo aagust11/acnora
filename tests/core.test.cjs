@@ -200,3 +200,60 @@ test('L’autodesament bloqueja un JSON canviat des de fora', () => {
   assert.equal(isConflictingContent('hash-original', 'hash-original'), false);
   assert.equal(isConflictingContent('hash-original', 'hash-modificat'), true);
 });
+
+const { isSessionPaused, sessionWorkedMs, sessionPausedMs, pauseSession, resumeSession, formatSessionClock } = loadUtility('src/utils/sessionPause.ts');
+
+test('Les sessions antigues continuen comptant temps sense pauses', () => {
+  const old = { startedTimestamp: 1_000 };
+  assert.equal(isSessionPaused(old), false);
+  assert.equal(sessionWorkedMs(old, 121_000), 120_000);
+  assert.equal(sessionPausedMs(old, 121_000), 0);
+});
+
+test('La pausa congela el temps treballat i el temps de descans no es factura', () => {
+  const started = { startedTimestamp: 0 };
+  const paused = pauseSession(started, 9 * 60_000);
+  assert.equal(isSessionPaused(paused), true);
+  assert.equal(sessionWorkedMs(paused, 20 * 60_000), 9 * 60_000);
+  assert.equal(sessionPausedMs(paused, 20 * 60_000), 11 * 60_000);
+  assert.equal(formatSessionClock(sessionWorkedMs(paused, 20 * 60_000)), '00:09:00');
+  const resumed = resumeSession(paused, 20 * 60_000);
+  assert.equal(isSessionPaused(resumed), false);
+  assert.equal(sessionWorkedMs(resumed, 22 * 60_000), 11 * 60_000);
+  assert.equal(sessionPausedMs(resumed, 22 * 60_000), 11 * 60_000);
+});
+
+test('Dues pauses acumulades i finalització mentre la segona està oberta', () => {
+  const start = { startedTimestamp: 0 };
+  const firstPause = pauseSession(start, 5 * 60_000);
+  const firstResume = resumeSession(firstPause, 8 * 60_000);
+  const secondPause = pauseSession(firstResume, 10 * 60_000);
+  assert.equal(sessionWorkedMs(secondPause, 30 * 60_000), 7 * 60_000);
+  assert.equal(sessionPausedMs(secondPause, 30 * 60_000), 23 * 60_000);
+  assert.equal(sessionWorkedMs(resumeSession(secondPause, 30 * 60_000), 30 * 60_000), 7 * 60_000);
+});
+
+test('Pausar o reprendre dues vegades no modifica el còmput', () => {
+  const s = { startedTimestamp: 10_000 };
+  const paused = pauseSession(s, 20_000);
+  assert.equal(pauseSession(paused, 30_000), paused);
+  assert.equal(resumeSession(s, 30_000), s);
+  assert.equal(sessionPausedMs(resumeSession(paused, 50_000), 50_000), 30_000);
+});
+
+test('L’estat pausat sobreviu a exportar/importar JSON i a recarregar la pàgina', () => {
+  const sess = pauseSession({ startedTimestamp: 100_000, pausedMs: 5_000 }, 200_000);
+  const original = { clients: [], projects: [], tasks: [], timeEntries: [], activeSession: sess };
+  const restored = normalizeDatabase(JSON.parse(JSON.stringify(original)));
+  assert.equal(isSessionPaused(restored.activeSession), true);
+  assert.equal(sessionWorkedMs(restored.activeSession, 500_000), 95_000);
+  assert.equal(sessionPausedMs(restored.activeSession, 500_000), 305_000);
+});
+
+test('Validació d’una sessió amb pauses que travessa mitjanit', () => {
+  const entry = { id:'test', data:'2026-11-12', dataFi:'2026-11-13', projecteId:'p',
+    horaInici:'23:50', horaFi:'00:25', duradaMinuts:15, pausaSegons:1200,
+    facturable:false };
+  const out = validateEntry(entry, [{id:'p',estat:'actiu'}], [], []);
+  assert.equal(out.status, 'correcte');
+});

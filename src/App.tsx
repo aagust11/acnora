@@ -19,6 +19,7 @@ import {
 import { generateMockEntries } from './data/mockData';
 import { createEmptyDatabase, normalizeDatabase } from './utils/database';
 import { validateEntry, localToday } from './utils/timeUtils';
+import { formatSessionClock, isSessionPaused, pauseSession, resumeSession, sessionPausedMs, sessionWorkedMs } from './utils/sessionPause';
 import { markQuoteAccepted, pruneExpiredQuotes } from './utils/issuedQuotes';
 import { LocalJsonHandle, contentHash, canWrite, isConflictingContent, retrieveLink, rememberLink, forgetLink } from './utils/localFileSync';
 
@@ -337,15 +338,13 @@ export default function App() {
       return;
     }
 
-    const interval = setInterval(() => {
-      const ms = Date.now() - db.activeSession!.startedTimestamp;
-      const h = Math.floor(ms / 3600000);
-      const m = Math.floor((ms % 3600000) / 60000);
-      const s = Math.floor((ms % 60000) / 1000);
-      const formatted = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    const updateClock = () => {
+      const formatted = formatSessionClock(sessionWorkedMs(db.activeSession!));
       setTickingTime(formatted);
-      document.title = `${formatted} · ACnora`;
-    }, 1000);
+      document.title = `${isSessionPaused(db.activeSession!) ? 'Pausa · ' : ''}${formatted} · ACnora`;
+    };
+    updateClock();
+    const interval = setInterval(updateClock, 1000);
 
     return () => clearInterval(interval);
   }, [db?.activeSession]);
@@ -517,15 +516,34 @@ export default function App() {
     setCurrentView('Dashboard'); // redirect to view ticket logs
   };
 
+  const handlePauseSession = () => {
+    if (!db.activeSession || isSessionPaused(db.activeSession)) return;
+    const session = pauseSession(db.activeSession);
+    commitDbChange({ ...db, activeSession: session }, {
+      accio: 'editar', entitat: 'registre', idEntitat: 'active',
+      resum: 'Cronòmetre pausat. Les pauses no compten com a treball efectiu.',
+    });
+  };
+
+  const handleResumeSession = () => {
+    if (!db.activeSession || !isSessionPaused(db.activeSession)) return;
+    const session = resumeSession(db.activeSession);
+    commitDbChange({ ...db, activeSession: session }, {
+      accio: 'editar', entitat: 'registre', idEntitat: 'active',
+      resum: 'Cronòmetre reprès.',
+    });
+  };
+
   const handleStopSession = (finalDesc?: string, finalNotes?: string) => {
     if (!db.activeSession) return;
 
     const { activeSession, timeEntries, projects, tasks } = db;
     
-    // Calculates elapsed absolute duration
+    // Descompta totes les pauses, inclosa la que encara estigui oberta.
     const stopTime = new Date();
-    const elapsedMs = stopTime.getTime() - activeSession.startedTimestamp;
-    const computedMins = Math.max(1, Math.floor(elapsedMs / 60000)); // Minimum 1 min duration
+    const workedMs = sessionWorkedMs(activeSession, stopTime.getTime());
+    const pauseMs = sessionPausedMs(activeSession, stopTime.getTime());
+    const computedMins = workedMs > 0 ? Math.max(1, Math.floor(workedMs / 60000)) : 0;
 
     const horaFiStr = stopTime.toLocaleTimeString('ca', { hour: '2-digit', minute: '2-digit' });
 
@@ -536,9 +554,11 @@ export default function App() {
       projecteId: activeSession.projecteId,
       tascaId: activeSession.tascaId,
       data: activeSession.data,
+      dataFi: localToday(),
       horaInici: activeSession.horaInici,
       horaFi: horaFiStr,
       duradaMinuts: computedMins,
+      pausaSegons: Math.floor(pauseMs / 1000),
       facturable: activeSession.facturable,
       tarifaHorariaAplicada: activeSession.tarifaHoraria,
       importCalculat: activeSession.facturable ? Number(((computedMins / 60) * (activeSession.tarifaHoraria || 0)).toFixed(2)) : 0,
@@ -566,7 +586,7 @@ export default function App() {
       accio: 'crear',
       entitat: 'registre',
       idEntitat: newEntry.id,
-      resum: `Aturat cronòmetre. Nou registre de ${computedMins} mins sobre "${projName}".`
+      resum: `Aturat cronòmetre. ${computedMins} min de treball i ${Math.floor(pauseMs / 60000)} min de pausa sobre "${projName}".`
     });
 
     setCurrentView('Registres'); // redirect directly to reviews
@@ -849,6 +869,8 @@ export default function App() {
             db={db}
             onNavigate={setCurrentView}
             onStopSession={handleStopSession}
+            onPauseSession={handlePauseSession}
+            onResumeSession={handleResumeSession}
             onUpdateActiveSession={handleUpdateActiveSession}
           />
         );
@@ -858,6 +880,8 @@ export default function App() {
             db={db}
             onStartSession={handleStartSession}
             onStopSession={handleStopSession}
+            onPauseSession={handlePauseSession}
+            onResumeSession={handleResumeSession}
             onUpdateActiveSession={handleUpdateActiveSession}
             onUpdateTaskNotes={handleUpdateTaskNotesSilent}
           />
@@ -993,7 +1017,7 @@ export default function App() {
 
           {db.activeSession && (
             <button onClick={() => setCurrentView('Cronòmetre')} className="mx-4 mt-4 w-[calc(100%-2rem)] rounded-lg bg-emerald-50 border border-emerald-200 px-3 py-3 text-left">
-              <span className="text-xs font-semibold text-emerald-800">Sessió en curs</span>
+              <span className={`text-xs font-semibold ${isSessionPaused(db.activeSession) ? 'text-amber-800' : 'text-emerald-800'}`}>{isSessionPaused(db.activeSession) ? 'Sessió en pausa' : 'Sessió en curs'}</span>
               <span className="block text-xl font-semibold tabular-nums text-slate-900 mt-1">{tickingTime}</span>
               <span className="block text-xs text-slate-600 truncate mt-1">{db.projects.find(p => p.id === db.activeSession!.projecteId)?.nom || 'Projecte'}</span>
             </button>
@@ -1060,7 +1084,7 @@ export default function App() {
             <button type="button" onClick={() => setCurrentView('Dades')} className="hidden lg:block text-xs text-slate-600 max-w-64 truncate hover:underline text-left" title={fileName || 'Dades del navegador'}>{fileHandle ? `${fileName} · ${fileSaveStatus === 'saved' ? 'Desat automàtic' : fileSaveStatus === 'saving' ? 'Desant...' : fileSaveStatus === 'pending' ? 'Pendent' : 'Revisa el desament'}` : 'Dades desades al navegador'}</button>
             <button onClick={() => setCurrentView('Cronòmetre')} className="rounded-md bg-[#234e70] hover:bg-[#193c58] text-white text-[13px] font-medium px-4 py-2.5 flex items-center gap-2">
               {db.activeSession ? <Clock className="w-4 h-4" /> : <Play className="w-4 h-4" />}
-              {db.activeSession ? 'Veure sessió activa' : 'Registrar temps'}
+              {db.activeSession ? (isSessionPaused(db.activeSession) ? 'Veure sessió en pausa' : 'Veure sessió activa') : 'Registrar temps'}
             </button>
           </div>
         </section>

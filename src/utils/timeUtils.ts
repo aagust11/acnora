@@ -78,7 +78,11 @@ export function validateEntry(
     status = 'pendent de revisar';
   } else {
     // 3. Hora d’inici anterior a hora de finalització (durada negativa)
-    const duration = calculateMinutes(entry.horaInici, entry.horaFi);
+    let duration = calculateMinutes(entry.horaInici, entry.horaFi);
+    if (entry.dataFi && entry.dataFi > entry.data) {
+      const diff = new Date(entry.dataFi + 'T00:00:00').getTime() - new Date(entry.data + 'T00:00:00').getTime();
+      duration += Math.round(diff / 86400000) * 1440;
+    }
     if (duration < 0) {
       warnings.push(`L'hora de fi (${entry.horaFi}) és anterior a la d'inici (${entry.horaInici}).`);
       status = 'incoherent';

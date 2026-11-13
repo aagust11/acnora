@@ -105,3 +105,14 @@ Quan el navegador disposa de permís d'escriptura, tots els canvis confirmats (c
 El navegador guarda la referència al fitxer a IndexedDB, però pot requerir tornar a autoritzar-ne l'accés en reobrir ACnora. Si un altre programa ha modificat el JSON des de l'última escriptura reconeguda, **ACnora no el sobreescriu**: mostra un conflicte i permet exportar les dades locals. Si no hi ha suport per a File System Access API, cal exportar manualment el JSON; el desament al navegador funciona igualment.
 
 **Atenció:** no és un sistema de sincronització de diversos dispositius, ni una còpia de seguretat versionada. Mantén còpies periòdiques del fitxer.
+
+## Pausar i reprendre una sessió de treball (v1.5)
+
+- Des de **Inici** o **Cronòmetre**, durant una sessió activa pots prémer **Pausar** i després **Reprendre**. Pots repetir-ho totes les vegades que necessitis.
+- El comptador mostra el **temps de treball efectiu** i es congela mentre la sessió està pausada. El temps de pausa es calcula per separat i **no es factura**.
+- **Aturar** finalitza també una sessió encara pausada, restant tot el temps de descans (inclosa la pausa en curs).
+- L'estat de pausa i el temps acumulat s'incorporen a la base de dades local i al **JSON vinculat amb desament automàtic**. Reobrir el navegador amb la sessió pausada no torna a iniciar el comptador.
+- Els registres finals conserven el temps de pausa en segons (`pausaSegons`) i, quan escau, la data final real (`dataFi`). Això permet distingir el temps transcorregut del temps imputat i tractar sessions que travessen mitjanit.
+- Els JSON antics, que no contenen aquests camps opcionals, continuen carregant-se i funcionen com abans. No s'ha modificat el model de pressupostos.
+
+**Nota sobre arrodoniment:** com abans, les sessions amb treball efectiu positiu inferior a un minut es registren amb el mínim d'un minut; una sessió amb 0 ms de treball es registra amb 0 minuts. Les pauses no aporten minuts facturables.

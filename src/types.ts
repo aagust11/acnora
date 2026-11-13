@@ -80,7 +80,9 @@ export interface TimeEntry {
   data: string; // YYYY-MM-DD
   horaInici: string; // HH:MM
   horaFi?: string; // HH:MM (optional if active/not set, though active is handled by activeSession)
-  duradaMinuts: number; // calculated minutes
+  duradaMinuts: number; // Treball efectiu (les pauses no es facturen)
+  pausaSegons?: number; // Temps acumulat de pausa, opcional per a registres antics
+  dataFi?: string; // Data real de finalització quan la sessió creua mitjanit
   facturable: boolean;
   tarifaHorariaAplicada?: number;
   importCalculat?: number;
@@ -103,7 +105,9 @@ export interface ActiveSession {
   tarifaHoraria?: number;
   descripcio: string;
   notes?: string;
-  startedTimestamp: number; // ms resolution for timer
+  startedTimestamp: number; // moment d'inici en ms
+  pausedAt?: number; // instant en què s'ha començat la pausa en curs
+  pausedMs?: number; // suma de pauses ja finalitzades en mil·lisegons
 }
 
 export interface FreelancerSettings {
