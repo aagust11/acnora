@@ -3,15 +3,20 @@ import { LocalDatabase } from '../types';
 import { Download, Upload, FileJson, AlertTriangle, CheckCircle, Save, Plus } from 'lucide-react';
 import { downloadFile } from '../utils/exportUtils';
 import { normalizeDatabase } from '../utils/database';
+import type { LocalJsonHandle } from '../utils/localFileSync';
 
 interface FileManagementViewProps {
   db: LocalDatabase;
   isDirty: boolean;
   fileName: string;
-  onLoadDb: (newDb: LocalDatabase, name: string, handle?: any) => void;
+  onLoadDb: (newDb: LocalDatabase, name: string, handle?: LocalJsonHandle, rawJson?: string) => Promise<void>;
   onSaveDb: () => Promise<void>;
   onCreateNewDb: () => void;
-  fileHandle: any;
+  fileHandle: LocalJsonHandle | null;
+  fileSaveStatus: 'browser' | 'restoring' | 'saved' | 'pending' | 'saving' | 'permission' | 'conflict' | 'error';
+  lastFileSavedAt: string | null;
+  onRestorePermission: () => Promise<void>;
+  onCreateLinkedJson: (handle: LocalJsonHandle) => Promise<void>;
 }
 
 export default function FileManagementView({
@@ -21,7 +26,11 @@ export default function FileManagementView({
   onLoadDb,
   onSaveDb,
   onCreateNewDb,
-  fileHandle
+  fileHandle,
+  fileSaveStatus,
+  lastFileSavedAt,
+  onRestorePermission,
+  onCreateLinkedJson
 }: FileManagementViewProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -33,13 +42,13 @@ export default function FileManagementView({
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       try {
         const json = JSON.parse(event.target?.result as string);
         
         const validated = normalizeDatabase(json);
         if (!window.confirm('Importar aquest fitxer substituirà les dades actuals d’ACnora en aquest navegador. Vols continuar?')) return;
-        onLoadDb(validated, file.name, null);
+        await onLoadDb(validated, file.name);
         setErrorMsg(null);
       } catch (err: any) {
         setErrorMsg(`Error de validació: ${err.message || 'Llegida incorrecta.'}`);
@@ -57,8 +66,8 @@ export default function FileManagementView({
         return;
       }
 
-      // @ts-ignore
-      const [handle] = await window.showOpenFilePicker({
+      const picker = (window as Window & { showOpenFilePicker: (options: unknown) => Promise<LocalJsonHandle[]> }).showOpenFilePicker;
+      const [handle] = await picker({
         types: [
           {
             description: 'Fitxer de dades JSON',
@@ -77,14 +86,45 @@ export default function FileManagementView({
 
       const validated = normalizeDatabase(json);
       if (!window.confirm('Importar aquest fitxer substituirà les dades actuals d’ACnora en aquest navegador. Vols continuar?')) return;
-      onLoadDb(validated, file.name, handle);
+      // The picker gives read permission; request write permission while we have
+      // a direct user interaction when possible. Otherwise the user can grant it
+      // later using the clear "Autoritzar desament" control.
+      try {
+        if ((await handle.queryPermission({ mode: 'readwrite' })) !== 'granted') {
+          await handle.requestPermission({ mode: 'readwrite' });
+        }
+      } catch (_) { /* The explicit reauthorization button remains available. */ }
+      await onLoadDb(validated, file.name, handle, text);
       setErrorMsg(null);
     } catch (err: any) {
       if (err.name !== 'AbortError') {
         setErrorMsg(`Error en obrir fitxer: ${err.message || err}`);
-        // Fallback click
-        fileInputRef.current?.click();
+        // Never silently change to a different data source after an error.
       }
+    }
+  };
+
+  const handleCreateLinkedJson = async () => {
+    try {
+      const savePicker = (window as Window & { showSaveFilePicker?: (options: unknown) => Promise<LocalJsonHandle> }).showSaveFilePicker;
+      if (!savePicker) {
+        setErrorMsg('Per crear un fitxer JSON vinculat necessites Chrome o Edge d’escriptori. Pots descarregar una còpia amb el botó anterior.');
+        return;
+      }
+      const handle = await savePicker({
+        suggestedName: fileName || 'acnora-dades.json',
+        types: [{ description: 'Dades ACnora', accept: { 'application/json': ['.json'] } }],
+      });
+      // The user may have to approve read/write access explicitly.
+      try {
+        if ((await handle.queryPermission({ mode: 'readwrite' })) !== 'granted') {
+          await handle.requestPermission({ mode: 'readwrite' });
+        }
+      } catch (_) { /* The parent will report whether write access exists. */ }
+      await onCreateLinkedJson(handle);
+      setErrorMsg(null);
+    } catch (error: any) {
+      if (error?.name !== 'AbortError') setErrorMsg(`No s’ha pogut crear o vincular el JSON: ${error?.message || error}`);
     }
   };
 
@@ -113,7 +153,7 @@ export default function FileManagementView({
           <div>
             <h2 className="text-xl font-sans font-semibold text-slate-900">Dades i còpies de seguretat</h2>
             <p className="text-sm text-slate-500 mt-1">
-              Els canvis es desen en aquest navegador. Pots exportar un JSON o vincular un fitxer local compatible.
+              Els canvis es desen automàticament al navegador i, si vincules un fitxer JSON, també s’hi escriuen sense haver de prémer «Desar».
             </p>
           </div>
           
@@ -137,30 +177,42 @@ export default function FileManagementView({
                   <div className="flex items-center gap-2">
                     <span className="font-semibold text-slate-800 text-sm">Fitxer actiu:</span>
                     <span className="text-xs bg-[#deebf3] text-[#234e70] font-mono px-2 py-0.5 rounded">
-                      {fileName || 'Dades del navegador'}
+                      {fileHandle ? fileName : 'Dades del navegador'}
                     </span>
                   </div>
                   <div className="text-xs text-slate-400 mt-0.5 font-mono">
-                    Canal: {fileHandle ? 'Fitxer vinculat (desament manual)' : 'Navegador + exportació JSON'}
+                    Canal: {fileHandle ? 'Fitxer vinculat · desament automàtic' : 'Navegador · exportació manual opcional'}
                   </div>
                 </div>
               </div>
 
-              {/* Status Indicators */}
-              <div className="mt-5 space-y-2">
-                <div className="flex items-center gap-2 text-sm">
-                  {isDirty ? (
-                    <div className="flex items-center gap-2 text-amber-600 bg-amber-50 px-3 py-1 rounded-lg border border-amber-100 w-full">
-                      <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
-                      <span className="font-medium text-xs">Hi ha canvis desats al navegador però encara no exportats al fitxer.</span>
+              {/* Reflect only confirmed file writes, never just an attempted write. */}
+              <div className="mt-5 space-y-2" role="status" aria-live="polite">
+                {fileHandle ? (
+                  <div className={`flex items-start gap-2 text-xs rounded-md border p-3 ${fileSaveStatus === 'saved' ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : fileSaveStatus === 'saving' || fileSaveStatus === 'pending' ? 'bg-blue-50 text-blue-800 border-blue-200' : 'bg-amber-50 text-amber-900 border-amber-200'}`}>
+                    {fileSaveStatus === 'saved' ? <CheckCircle className="w-4 h-4 shrink-0"/> : <AlertTriangle className="w-4 h-4 shrink-0"/>}
+                    <div className="space-y-1">
+                      <p className="font-semibold">{({
+                        saved: 'Canvis desats automàticament al fitxer JSON',
+                        pending: 'Hi ha canvis pendents de desar al JSON…',
+                        saving: 'Desant ara al fitxer JSON…',
+                        permission: 'Cal autoritzar l’escriptura al fitxer JSON',
+                        conflict: 'El fitxer JSON s’ha modificat fora d’ACnora',
+                        error: 'No s’ha pogut desar al fitxer JSON',
+                        restoring: 'Recuperant el fitxer vinculat…',
+                        browser: 'Dades desades al navegador',
+                      } as const)[fileSaveStatus]}</p>
+                      {fileSaveStatus === 'saved' && lastFileSavedAt && <p>Darrera escriptura: {lastFileSavedAt}</p>}
+                      {fileSaveStatus === 'permission' && <button type="button" onClick={() => void onRestorePermission().catch(e => setErrorMsg(e instanceof Error ? e.message : String(e)))} className="underline font-semibold">Autoritzar desament automàtic</button>}
+                      {fileSaveStatus === 'conflict' && <p>No se sobreescriurà el JSON. Descarrega una còpia de les dades actuals abans de tornar a importar el fitxer.</p>}
+                      {fileSaveStatus === 'error' && <p>Conservem les dades al navegador. Revisa els permisos o descarrega una còpia JSON.</p>}
                     </div>
-                  ) : (
-                    <div className="flex items-center gap-2 text-emerald-600 bg-emerald-50 px-3 py-1 rounded-lg border border-emerald-100 w-full">
-                      <CheckCircle className="w-4 h-4 text-emerald-500 shrink-0" />
-                      <span className="font-medium text-xs">No hi ha canvis pendents de desar al fitxer. Les dades també es conserven en aquest navegador.</span>
-                    </div>
-                  )}
-                </div>
+                  </div>
+                ) : (
+                  <div className="text-xs rounded-md border border-slate-200 bg-white p-3 text-slate-700 flex gap-2 items-center">
+                    <CheckCircle className="w-4 h-4 shrink-0 text-slate-500"/> Desament al navegador actiu. Per escriure també en un fitxer del teu ordinador, vincula un JSON.
+                  </div>
+                )}
               </div>
             </div>
 
@@ -173,7 +225,7 @@ export default function FileManagementView({
                 className="flex items-center gap-2 bg-[#234e70] hover:bg-[#193c58] disabled:bg-blue-300 text-white text-xs font-semibold px-4 py-2.5 rounded-lg transition shadow-sm cursor-pointer"
               >
                 <Save className="w-4 h-4" />
-                {isSaving ? 'Desant...' : 'Desar / exportar JSON'}
+                {isSaving ? 'Desant...' : fileHandle ? 'Desar ara' : 'Exportar còpia JSON'}
               </button>
 
               <button
@@ -196,11 +248,15 @@ export default function FileManagementView({
               </div>
             </div>
 
+            <button type="button" onClick={handleCreateLinkedJson}
+              className="mt-4 mb-2 w-full bg-[#234e70] hover:bg-[#1b3f5c] text-white text-xs font-semibold py-2.5 rounded-md">
+              Crear JSON vinculat amb les dades actuals
+            </button>
             <button
               onClick={handleOpenFilePicker}
-              className="mt-4 w-full bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold py-2 rounded-lg transition duration-200 cursor-pointer"
+              className="w-full border border-slate-300 bg-white text-[#234e70] hover:bg-slate-50 text-xs font-semibold py-2.5 rounded-md"
             >
-              Importar fitxer JSON
+              Vincular / importar JSON
             </button>
 
             {/* Hidden Input File for standard fallback */}
@@ -232,13 +288,13 @@ export default function FileManagementView({
             <strong>Dades locals:</strong> L’aplicació no té base de dades ni envia els registres a cap servidor propi. El navegador conserva les dades únicament en aquest dispositiu i perfil.
           </li>
           <li>
-            <strong>Fitxer vinculat:</strong> A Chrome i Edge, obrir un JSON pot donar permís per actualitzar el fitxer quan premis «Desar / exportar JSON». No s’actualitza automàticament.
+            <strong>Fitxer vinculat:</strong> A Chrome i Edge, després d’autoritzar l’accés, cada canvi confirmat s’escriu automàticament al fitxer JSON. En reobrir el navegador, pot ser necessari tornar a donar el permís.
           </li>
           <li>
-            <strong>Altres navegadors:</strong> Si no hi ha accés directe al fitxer, l’opció de desar descarrega una còpia JSON. Importa-la manualment si canvies de dispositiu.
+            <strong>Altres navegadors:</strong> En navegadors sense accés directe al fitxer, els canvis continuen desant-se al navegador i cal exportar manualment el JSON. Importa-la manualment si canvies de dispositiu.
           </li>
           <li>
-            <strong>Còpies de seguretat:</strong> Les dades del navegador (<span className="italic">localStorage</span>) es poden perdre si es buiden les dades del lloc o falla el dispositiu. Exporta una còpia periòdicament i desa-la en un lloc segur.
+            <strong>Còpies de seguretat i conflictes:</strong> Les dades del navegador (<span className="italic">localStorage</span>) es poden perdre si es buiden les dades del lloc o falla el dispositiu. El JSON vinculat pot ser sobreescrit amb cada desament: conserva còpies de seguretat periòdiques i no l’editis simultàniament des d’altres pestanyes o programes.
           </li>
         </ul>
       </div>

@@ -92,3 +92,16 @@ La generació del PDF és local al navegador, sense enviar informació comercial
 ### Límit d'emmagatzematge important
 
 Els PDF es guarden dins del JSON local en Base64 per fer-los exportables juntament amb les dades. Això augmenta l'ocupació del `localStorage` i la mida de les còpies JSON. Si s'exhaureix la quota, ACnora no considera el pressupost com a emès i avisa de l'error. **Fes còpies periòdiques del JSON i dels PDF originals.** No existeix una tasca en segon pla: amb la web tancada no s'executa cap purga. Tampoc no és un sistema d'arxiu legal amb signatura digital ni un registre d'acceptació verificable per un tercer: marcar «acceptat» és una acció manual local.
+
+## Desament automàtic del JSON (Chrome / Edge)
+
+ACnora conserva una còpia de treball al navegador. A **Dades i còpies**, pots fer dues accions:
+
+- **Crear JSON vinculat amb les dades actuals:** seleccionar una ubicació de l’ordinador i començar a desar automàticament els canvis en aquest fitxer.
+- **Vincular / importar JSON:** obrir un JSON antic, importar-ne les dades després de confirmar la substitució i vincular-lo per a desaments futurs.
+
+Quan el navegador disposa de permís d'escriptura, tots els canvis confirmats (clients, projectes, tasques, blocs, hores, pressupostos, configuració i caducitats) passen al JSON després d'una pausa de 600 ms, amb escriptures serialitzades. L'estat de desament és visible a la capçalera i a **Dades i còpies**. Es conserva el desament automàtic al navegador.
+
+El navegador guarda la referència al fitxer a IndexedDB, però pot requerir tornar a autoritzar-ne l'accés en reobrir ACnora. Si un altre programa ha modificat el JSON des de l'última escriptura reconeguda, **ACnora no el sobreescriu**: mostra un conflicte i permet exportar les dades locals. Si no hi ha suport per a File System Access API, cal exportar manualment el JSON; el desament al navegador funciona igualment.
+
+**Atenció:** no és un sistema de sincronització de diversos dispositius, ni una còpia de seguretat versionada. Mantén còpies periòdiques del fitxer.

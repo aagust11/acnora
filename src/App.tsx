@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   LocalDatabase,
   TimeEntry,
@@ -20,6 +20,7 @@ import { generateMockEntries } from './data/mockData';
 import { createEmptyDatabase, normalizeDatabase } from './utils/database';
 import { validateEntry, localToday } from './utils/timeUtils';
 import { markQuoteAccepted, pruneExpiredQuotes } from './utils/issuedQuotes';
+import { LocalJsonHandle, contentHash, canWrite, isConflictingContent, retrieveLink, rememberLink, forgetLink } from './utils/localFileSync';
 
 // Import our views
 import DashboardView from './components/DashboardView';
@@ -55,6 +56,8 @@ import {
 
 const LOCAL_STORAGE_KEY = 'freelance_tracker_master_db';
 const LOCAL_STORAGE_NAME_KEY = 'freelance_tracker_file_name';
+type FileSaveStatus = 'browser' | 'restoring' | 'saved' | 'pending' | 'saving' | 'permission' | 'conflict' | 'error';
+const AUTOSAVE_DELAY_MS = 600;
 
 export default function App() {
   // Navigation State
@@ -66,7 +69,18 @@ export default function App() {
   const [db, setDb] = useState<LocalDatabase | null>(null);
   const [isDirty, setIsDirty] = useState(false);
   const [fileName, setFileName] = useState('');
-  const [fileHandle, setFileHandle] = useState<any>(null);
+  const [fileHandle, setFileHandle] = useState<LocalJsonHandle | null>(null);
+  const [fileSaveStatus, setFileSaveStatus] = useState<FileSaveStatus>('restoring');
+  const [lastFileSavedAt, setLastFileSavedAt] = useState<string | null>(null);
+  const linkRef = useRef<LocalJsonHandle | null>(null);
+  const lastHashRef = useRef<string | null>(null);
+  const latestDbRef = useRef<LocalDatabase | null>(null);
+  const saveRevisionRef = useRef(0);
+  const linkVersionRef = useRef(0);
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const writingRef = useRef(false);
+  const browserStorageErrorRef = useRef(false);
+  const blockedRef = useRef(false);
   const [storageWarning, setStorageWarning] = useState('');
 
   // Time-tracking elapsed clock state
@@ -80,6 +94,7 @@ export default function App() {
       try {
         const original = normalizeDatabase(JSON.parse(saved));
         const current = pruneExpiredQuotes(original, localToday());
+        latestDbRef.current = current;
         setDb(current);
         if (current !== original) {
           try { localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(current)); }
@@ -88,15 +103,196 @@ export default function App() {
         if (savedName) setFileName(savedName);
       } catch (error) {
         console.error('No es poden carregar les dades locals', error);
-        setDb(createEmptyDatabase());
+        const empty = createEmptyDatabase(); latestDbRef.current = empty; setDb(empty);
         try { localStorage.setItem(LOCAL_STORAGE_KEY + '_recovery', saved); } catch (_) { /* Storage can be unavailable. */ }
         setStorageWarning('No s’han pogut llegir les dades anteriors. S’ha intentat conservar una còpia de recuperació al navegador; no comencis a treballar abans de revisar-la.');
       }
     } else {
       // A real workspace starts empty; example records must never look like real billing.
-      setDb(createEmptyDatabase());
+      const empty = createEmptyDatabase(); latestDbRef.current = empty; setDb(empty);
     }
   }, []);
+
+  // A file handle can be remembered by IndexedDB, but the browser may ask for
+  // read/write permission again after reopening. Never claim a successful file
+  // save until the exact write operation has completed.
+  useEffect(() => {
+    if (!db) return;
+    let cancelled = false;
+    const restore = async () => {
+      try {
+        const linked = await retrieveLink();
+        if (cancelled) return;
+        if (!linked) { setFileSaveStatus('browser'); return; }
+        linkRef.current = linked.handle;
+        lastHashRef.current = linked.hash;
+        setFileHandle(linked.handle);
+        setFileName(linked.handle.name);
+        if (!(await canWrite(linked.handle))) {
+          if (!cancelled) { setFileSaveStatus('permission'); setIsDirty(true); }
+          return;
+        }
+        const diskText = await (await linked.handle.getFile()).text();
+        if (cancelled) return;
+        if (isConflictingContent(linked.hash, await contentHash(diskText))) {
+          blockedRef.current = true;
+          setFileSaveStatus('conflict');
+          setStorageWarning('El JSON vinculat ha canviat fora d’ACnora. No se sobreescriurà. Descarrega una còpia de les dades del navegador i torna a importar el fitxer si vols recuperar-lo.');
+          return;
+        }
+        const browserText = localStorage.getItem(LOCAL_STORAGE_KEY);
+        const diskNormalized = normalizeDatabase(JSON.parse(diskText));
+        if (!browserText) {
+          const restored = pruneExpiredQuotes(diskNormalized, localToday());
+          latestDbRef.current = restored;
+          setDb(restored);
+          try { localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(restored)); } catch (_) { /* Warned on next write. */ }
+        } else {
+          const browserDatabase = latestDbRef.current ?? normalizeDatabase(JSON.parse(browserText));
+          if (JSON.stringify(browserDatabase) !== JSON.stringify(diskNormalized)) {
+            // Browser storage is our recovery copy for unsynced changes; the file
+            // still matches the last known hash, so writing cannot overwrite
+            // someone else's new changes.
+            scheduleFileSave(browserDatabase);
+            return;
+          }
+        }
+        setFileSaveStatus('saved');
+        setIsDirty(false);
+      } catch (error) {
+        if (!cancelled) {
+          console.error('No es pot recuperar el vincle JSON', error);
+          setFileSaveStatus(linkRef.current ? 'error' : 'browser');
+          setStorageWarning('No s’ha pogut recuperar el fitxer JSON vinculat. Les dades locals es conserven; revisa «Dades i còpies».');
+        }
+      }
+    };
+    void restore();
+    return () => { cancelled = true; };
+  }, [!!db]);
+
+  useEffect(() => {
+    const warn = (event: BeforeUnloadEvent) => {
+      if (fileSaveStatus === 'pending' || fileSaveStatus === 'saving') {
+        event.preventDefault();
+        event.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [fileSaveStatus]);
+
+  const clearSaveTimer = () => {
+    if (saveTimerRef.current !== null) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = null;
+  };
+
+  const unlinkFile = async (): Promise<void> => {
+    clearSaveTimer();
+    ++linkVersionRef.current;
+    linkRef.current = null;
+    lastHashRef.current = null;
+    blockedRef.current = false;
+    setFileHandle(null);
+    setFileSaveStatus('browser');
+    setLastFileSavedAt(null);
+    // The browser-local workspace is never cleared by unlinking a JSON.
+    await forgetLink().catch(error => {
+      console.warn('No s’ha pogut esborrar el vincle de l’IndexedDB', error);
+      setStorageWarning('El navegador no ha pogut oblidar el vincle. Si reobres la pàgina, comprova el fitxer actiu.');
+    });
+  };
+
+  const scheduleFileSave = (nextDb: LocalDatabase) => {
+    latestDbRef.current = nextDb;
+    ++saveRevisionRef.current;
+    if (!linkRef.current) return;
+    setIsDirty(true);
+    if (blockedRef.current) return;
+    setFileSaveStatus('pending');
+    clearSaveTimer();
+    saveTimerRef.current = setTimeout(() => { void flushFileSave().catch(() => undefined); }, AUTOSAVE_DELAY_MS);
+  };
+
+  const flushFileSave = async (): Promise<void> => {
+    clearSaveTimer();
+    const handle = linkRef.current;
+    const expectedHash = lastHashRef.current;
+    if (!handle || !expectedHash) return;
+    if (blockedRef.current) throw new Error('El fitxer està bloquejat per evitar sobreescriure modificacions externes.');
+    if (writingRef.current) return; // The running write will pick up the latest revision.
+    writingRef.current = true;
+    const startRevision = saveRevisionRef.current;
+    const startLinkVersion = linkVersionRef.current;
+    const payload = JSON.stringify(latestDbRef.current, null, 2);
+    let didWrite = false;
+    try {
+      if (!(await canWrite(handle))) { setFileSaveStatus('permission'); return; }
+      setFileSaveStatus('saving');
+      // Web Locks serializes the read/check/write operation across tabs from
+      // the same browser origin. A hash check still blocks external programs.
+      const exclusiveWrite = async () => {
+        const currentHash = await contentHash(await (await handle.getFile()).text());
+        if (currentHash !== expectedHash) {
+          blockedRef.current = true;
+          setFileSaveStatus('conflict');
+          setStorageWarning('El JSON ha canviat des d’una altra pestanya o programa. ACnora ha aturat l’autodesament per no destruir aquests canvis. Descarrega una còpia JSON i torna a importar el fitxer.');
+          return;
+        }
+        if (linkVersionRef.current !== startLinkVersion || linkRef.current !== handle) return;
+        const writable = await handle.createWritable();
+        try { await writable.write(payload); await writable.close(); }
+        catch (e) { if (writable.abort) await writable.abort().catch(() => undefined); throw e; }
+        if (linkVersionRef.current !== startLinkVersion || linkRef.current !== handle) return;
+        const newHash = await contentHash(payload);
+        lastHashRef.current = newHash;
+        didWrite = true;
+        try { await rememberLink({ handle, hash: newHash }); }
+        catch (e) { console.warn('No s’ha pogut recordar el vincle, però el JSON s’ha escrit correctament.', e); }
+      };
+      if (navigator.locks?.request) {
+        await navigator.locks.request(`acnora-json-${handle.name}`, exclusiveWrite);
+      } else {
+        await exclusiveWrite();
+      }
+      if (!didWrite) return;
+      if (startRevision === saveRevisionRef.current) {
+        setFileSaveStatus('saved');
+        setIsDirty(false);
+        setLastFileSavedAt(new Date().toLocaleTimeString('ca', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+      }
+      if (!browserStorageErrorRef.current) setStorageWarning('');
+    } catch (error) {
+      console.error('Error d’autodesament al JSON', error);
+      setFileSaveStatus(error instanceof DOMException && error.name === 'NotAllowedError' ? 'permission' : 'error');
+      setStorageWarning('No s’ha pogut escriure al JSON. Les dades es mantenen al navegador; revisa els permisos i desa una còpia manual abans de tancar.');
+      throw error;
+    } finally {
+      writingRef.current = false;
+      if (didWrite && linkRef.current === handle && !blockedRef.current && lastHashRef.current && startRevision !== saveRevisionRef.current) {
+        clearSaveTimer();
+        saveTimerRef.current = setTimeout(() => { void flushFileSave().catch(() => undefined); }, 100);
+      }
+    }
+  };
+
+  const restoreWritePermission = async () => {
+    const handle = linkRef.current;
+    if (!handle) return;
+    const permission = await handle.requestPermission({ mode: 'readwrite' });
+    if (permission !== 'granted') { setFileSaveStatus('permission'); return; }
+    const currentHash = await contentHash(await (await handle.getFile()).text());
+    if (lastHashRef.current !== currentHash) {
+      blockedRef.current = true;
+      setFileSaveStatus('conflict');
+      setStorageWarning('El fitxer ha canviat des de l’última vinculació. No s’ha sobreescrit; importa’l de nou o conserva abans una còpia del navegador.');
+      return;
+    }
+    blockedRef.current = false;
+    setStorageWarning('');
+    const browserDatabase = latestDbRef.current;
+    if (browserDatabase) scheduleFileSave(browserDatabase);
+  };
 
   // Cleanup on reopening and each minute while ACnora is open (no background worker).
   useEffect(() => {
@@ -108,6 +304,7 @@ export default function App() {
         localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(cleaned));
         setDb(cleaned);
         setIsDirty(true);
+        scheduleFileSave(cleaned);
         setStorageWarning('');
       } catch (error) {
         console.error('No s’han pogut desar les caducitats', error);
@@ -120,11 +317,14 @@ export default function App() {
   }, [db]);
 
   const persistLocally = (database: LocalDatabase) => {
+    latestDbRef.current = database;
     try {
       localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(database));
+      browserStorageErrorRef.current = false;
       setStorageWarning('');
     } catch (error) {
       console.error('No es pot desar al navegador', error);
+      browserStorageErrorRef.current = true;
       setStorageWarning('El navegador no ha pogut desar els canvis. Exporta ara una còpia JSON des de «Dades i còpies».');
     }
   };
@@ -191,17 +391,59 @@ export default function App() {
     setDb(nextDb);
     setIsDirty(true);
     persistLocally(nextDb);
+    scheduleFileSave(nextDb);
   };
 
-  // Importing a JSON replaces the active workspace (after confirmation in the file view).
-  const handleLoadDb = (loadedDb: LocalDatabase, name: string, handle?: any) => {
+  // Linking or importing requires explicit user confirmation from the file view.
+  const handleLoadDb = async (loadedDb: LocalDatabase, name: string, handle?: LocalJsonHandle, rawJson?: string): Promise<void> => {
     const normalized = pruneExpiredQuotes(normalizeDatabase(loadedDb), localToday());
+    await unlinkFile();
+    latestDbRef.current = normalized;
     setDb(normalized);
     setFileName(name);
-    setFileHandle(handle || null);
     setIsDirty(false);
     persistLocally(normalized);
     localStorage.setItem(LOCAL_STORAGE_NAME_KEY, name);
+    if (handle && rawJson) {
+      const hash = await contentHash(rawJson);
+      // Remember the original hash so future changes made by other programs
+      // will never be silently overwritten.
+      lastHashRef.current = hash;
+      linkRef.current = handle;
+      ++linkVersionRef.current;
+      blockedRef.current = false;
+      setFileHandle(handle);
+      try { await rememberLink({ handle, hash }); }
+      catch (error) {
+        console.warn('La vinculació només es mantindrà durant aquesta sessió', error);
+        setStorageWarning('No s’ha pogut recordar el fitxer per a la pròxima sessió. Desament automàtic actiu ara; caldrà tornar-lo a vincular després.');
+      }
+      if (await canWrite(handle)) {
+        const importedOnDisk = normalizeDatabase(JSON.parse(rawJson));
+        if (JSON.stringify(normalized) !== JSON.stringify(importedOnDisk)) scheduleFileSave(normalized);
+        else setFileSaveStatus('saved');
+      } else setFileSaveStatus('permission');
+    }
+  };
+
+  // Create a fresh JSON from the current browser workspace, without importing
+  // and losing current data. The operating-system picker supplies the handle.
+  const handleCreateLinkedJson = async (handle: LocalJsonHandle): Promise<void> => {
+    const original = await (await handle.getFile()).text();
+    if (original.trim() && !window.confirm('El fitxer escollit ja conté dades. Vols SUBSTITUIR-LES per les dades actuals del navegador?')) return;
+    if (!(await canWrite(handle))) throw new Error('No hi ha permís d’escriptura per aquest fitxer.');
+    await unlinkFile();
+    const originalHash = await contentHash(original);
+    linkRef.current = handle;
+    lastHashRef.current = originalHash;
+    ++linkVersionRef.current;
+    blockedRef.current = false;
+    setFileHandle(handle);
+    setFileName(handle.name);
+    localStorage.setItem(LOCAL_STORAGE_NAME_KEY, handle.name);
+    try { await rememberLink({ handle, hash: originalHash }); }
+    catch (e) { console.warn('No es pot recordar el vincle entre sessions', e); }
+    scheduleFileSave(latestDbRef.current ?? db);
   };
 
   const downloadDatabase = (database: LocalDatabase, name: string) => {
@@ -216,26 +458,14 @@ export default function App() {
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
-  // A file is updated only after the user explicitly chooses Save.
-  // The browser's localStorage snapshot is a separate, automatic safety net.
+  // Manual save is optional while a JSON is linked: normal edits autosave.
   const handleSaveDb = async () => {
-    if (!fileHandle) {
-      downloadDatabase(db, fileName || 'acnora-dades.json');
-      setIsDirty(false);
-      return;
-    }
-    try {
-      const writable = await fileHandle.createWritable();
-      await writable.write(JSON.stringify(db, null, 2));
-      await writable.close();
-      setIsDirty(false);
-    } catch (error) {
-      console.error('No es pot escriure al fitxer', error);
-      alert('No s’ha pogut actualitzar el fitxer original. Es descarregarà una còpia de seguretat.');
-      downloadDatabase(db, fileName || 'acnora-dades.json');
-      setIsDirty(false);
-      setFileHandle(null);
-    }
+    if (!linkRef.current) { downloadDatabase(db, fileName || 'acnora-dades.json'); return; }
+    if (blockedRef.current) throw new Error('El JSON s’ha modificat fora d’ACnora. No es pot sobreescriure sense tornar-lo a vincular.');
+    if (!(await canWrite(linkRef.current))) { setFileSaveStatus('permission'); throw new Error('Autoritza primer l’accés d’escriptura al fitxer.'); }
+    if (writingRef.current) return; // An automatic write is already in progress.
+    scheduleFileSave(db);
+    await flushFileSave();
   };
 
   const handleCreateNewDb = () => {
@@ -243,7 +473,7 @@ export default function App() {
     const empty = createEmptyDatabase();
     setDb(empty);
     setFileName('acnora-dades.json');
-    setFileHandle(null);
+    void unlinkFile();
     setIsDirty(true);
     persistLocally(empty);
     localStorage.setItem(LOCAL_STORAGE_NAME_KEY, 'acnora-dades.json');
@@ -254,7 +484,7 @@ export default function App() {
     const empty = createEmptyDatabase();
     setDb(empty);
     setFileName('');
-    setFileHandle(null);
+    void unlinkFile();
     setIsDirty(false);
     persistLocally(empty);
     localStorage.removeItem(LOCAL_STORAGE_NAME_KEY);
@@ -266,7 +496,7 @@ export default function App() {
     const demo = generateMockEntries(new Date().toISOString());
     setDb(demo);
     setFileName('acnora-demostracio.json');
-    setFileHandle(null);
+    void unlinkFile();
     setIsDirty(true);
     persistLocally(demo);
     localStorage.setItem(LOCAL_STORAGE_NAME_KEY, 'acnora-demostracio.json');
@@ -567,6 +797,7 @@ export default function App() {
       localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(nextDb));
       setDb(nextDb);
       setIsDirty(true);
+      scheduleFileSave(nextDb);
       setStorageWarning('');
       return true;
     } catch (error) {
@@ -700,6 +931,10 @@ export default function App() {
             isDirty={isDirty}
             fileName={fileName}
             fileHandle={fileHandle}
+            fileSaveStatus={fileSaveStatus}
+            lastFileSavedAt={lastFileSavedAt}
+            onRestorePermission={restoreWritePermission}
+            onCreateLinkedJson={handleCreateLinkedJson}
             onLoadDb={handleLoadDb}
             onSaveDb={handleSaveDb}
             onCreateNewDb={handleCreateNewDb}
@@ -787,9 +1022,9 @@ export default function App() {
           </nav>
         </div>
         <div className="p-4 border-t border-slate-200">
-          <p className="text-xs text-slate-600 mb-3">{fileHandle ? (isDirty ? 'Canvis pendents al fitxer' : 'Fitxer actualitzat') : 'Dades desades en aquest navegador'}</p>
+          <p className="text-xs text-slate-600 mb-3">{fileHandle ? ({ saved: 'JSON desat automàticament', pending: 'Canvis pendents de desar', saving: 'Desant al JSON...', permission: 'Cal autoritzar el JSON', conflict: 'Conflicte: JSON extern modificat', error: 'Error de desament del JSON', restoring: 'Recuperant fitxer', browser: 'Desament al navegador' }[fileSaveStatus]) : 'Desament automàtic al navegador'}</p>
           <button onClick={handleSaveDb} id="sidebar-btn-save-db" className="flex items-center justify-center gap-2 w-full rounded-md border border-slate-300 bg-white px-3 py-2.5 text-[13px] font-medium text-slate-700 hover:bg-slate-50">
-            <Save className="w-4 h-4" /> {fileHandle ? 'Desar al fitxer' : 'Exportar còpia JSON'}
+            <Save className="w-4 h-4" /> {fileHandle ? 'Desar ara al JSON' : 'Exportar còpia JSON'}
           </button>
         </div>
       </aside>
@@ -822,7 +1057,7 @@ export default function App() {
             <p className="text-[13px] text-slate-500 mt-1">{currentInfo.subtitle}</p>
           </div>
           <div className="flex items-center gap-3">
-            <span className="hidden lg:block text-xs text-slate-500 max-w-48 truncate" title={fileName || 'Dades del navegador'}>{fileName || 'Espai de treball local'}</span>
+            <button type="button" onClick={() => setCurrentView('Dades')} className="hidden lg:block text-xs text-slate-600 max-w-64 truncate hover:underline text-left" title={fileName || 'Dades del navegador'}>{fileHandle ? `${fileName} · ${fileSaveStatus === 'saved' ? 'Desat automàtic' : fileSaveStatus === 'saving' ? 'Desant...' : fileSaveStatus === 'pending' ? 'Pendent' : 'Revisa el desament'}` : 'Dades desades al navegador'}</button>
             <button onClick={() => setCurrentView('Cronòmetre')} className="rounded-md bg-[#234e70] hover:bg-[#193c58] text-white text-[13px] font-medium px-4 py-2.5 flex items-center gap-2">
               {db.activeSession ? <Clock className="w-4 h-4" /> : <Play className="w-4 h-4" />}
               {db.activeSession ? 'Veure sessió activa' : 'Registrar temps'}

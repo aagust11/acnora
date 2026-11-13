@@ -172,21 +172,31 @@ const task = (id, nom, blocId) => ({id, nom, blocId});
 const groups = [{id:'bz',nom:'Zeta'},{id:'ba',nom:'Anàlisi'}];
 const quoteTasks = [task('a','Zoologia','ba'),task('b','Altres','bz'),task('c','Anàlisi','ba'),task('d','Tasca lliure')];
 
-test('Ordena per nom de bloc i per tasca, sense bloc al final', () => {
-  assert.equal(orderQuoteTasks(quoteTasks, groups).map(t => t.id).join(','), 'c,a,b,d');
+test('Els pressupostos s’ordenen per nom del bloc i després per nom de la tasca, sense bloc al final', () => {
+  assert.deepEqual(orderQuoteTasks(quoteTasks, groups).map(t => t.id).join(','), 'c,a,b,d');
 });
-test('Permet moure blocs sencers mantenint les tasques agrupades', () => {
+
+test('Permet reordenar els blocs conservant les tasques agrupades', () => {
   const moved = moveQuoteGroup(quoteTasks, groups, [], 'bz', -1);
   assert.equal(orderQuoteTasks(quoteTasks, groups, moved).map(t => t.id).join(','), 'b,c,a,d');
 });
-test('Permet moure tasques únicament dins del mateix bloc', () => {
+
+test('Permet reordenar les tasques només dins del seu bloc', () => {
   const moved = moveQuoteTask(quoteTasks, groups, [], 'a', -1);
   assert.equal(orderQuoteTasks(quoteTasks, groups, moved).map(t => t.id).join(','), 'a,c,b,d');
   const unchanged = moveQuoteTask(quoteTasks, groups, moved, 'a', -1);
   assert.equal(orderQuoteTasks(quoteTasks, groups, unchanged).map(t => t.id).join(','), 'a,c,b,d');
 });
-test('Una nova tasca respecta l’ordre manual existent', () => {
+
+test('Quan apareix una nova tasca no perd l’ordre personalitzat dels blocs', () => {
   const moved = moveQuoteGroup(quoteTasks, groups, [], 'bz', -1);
   const expanded = [...quoteTasks, task('e','Bona nit','bz')];
   assert.equal(orderQuoteTasks(expanded, groups, moved).map(t => t.id).join(','), 'b,e,c,a,d');
+});
+
+const { isConflictingContent } = loadUtility('src/utils/localFileSync.ts');
+
+test('L’autodesament bloqueja un JSON canviat des de fora', () => {
+  assert.equal(isConflictingContent('hash-original', 'hash-original'), false);
+  assert.equal(isConflictingContent('hash-original', 'hash-modificat'), true);
 });
