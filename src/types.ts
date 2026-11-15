@@ -51,7 +51,7 @@ export interface QuoteRateBand {
   concepte?: string;
   horesMin: number;
   horesMax: number;
-  tarifa: number; // 0 €/h = no facturable / inclòs sense cost
+  tarifa: number; // Amb hores: €/h (0 = no facturable); amb 0–0 hores: preu fix del servei en €
 }
 
 export interface Task {
@@ -66,7 +66,8 @@ export interface Task {
   horesEstimadesMin?: number; // Estimació comercial manual i independent de l'import
   horesEstimadesMax?: number;
   tarifaHorariaPressupost?: number; // Legacy single-rate estimate, retained for compatibility
-  pressupostTrams?: QuoteRateBand[]; // Rates and hours by work type; zero rate supported
+  pressupostTrams?: QuoteRateBand[]; // Trams horaris i serveis de preu fix (0 h / 0 h)
+  importManualPressupost?: number; // Import final de la tasca; si es defineix, substitueix el càlcul per trams
   notes?: string;
   dataCreacio: string;
   dataModificacio: string;

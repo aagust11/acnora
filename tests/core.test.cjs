@@ -122,10 +122,10 @@ test('Una tasca combina diferents tarifes i hores no facturables a 0 €/h', () 
   assert.equal(summary.lines[0].hourlyRate, null);
 });
 
-test('Un pressupost no accepta trams parcials, negatius o sense hores', () => {
+test('Un pressupost no accepta trams parcials, negatius o buits', () => {
   const project = { id:'p1' };
   const settings = { defaultHourlyRate:50 };
-  for (const trams of [[{id:'a',horesMin:2,horesMax:1,tarifa:50}], [{id:'a',horesMin:1,horesMax:2,tarifa:-1}], [{id:'a',horesMin:0,horesMax:0,tarifa:0}], []]) {
+  for (const trams of [[{id:'a',horesMin:2,horesMax:1,tarifa:50}], [{id:'a',horesMin:1,horesMax:2,tarifa:-1}], []]) {
     const summary = buildQuoteSummary([{id:'t',nom:'T',pressupostTrams:trams}],project,settings);
     assert.equal(summary.errors.length,1);
   }
@@ -256,4 +256,63 @@ test('Validació d’una sessió amb pauses que travessa mitjanit', () => {
     facturable:false };
   const out = validateEntry(entry, [{id:'p',estat:'actiu'}], [], []);
   assert.equal(out.status, 'correcte');
+});
+
+
+test('Un tram 0–0 hores significa preu fix i no mostra hores facturables', () => {
+  const summary = buildQuoteSummary([{
+    id:'fix', nom:'Configuració inicial', pressupostTrams:[{id:'f',concepte:'Servei tancat',horesMin:0,horesMax:0,tarifa:500}],
+  }], {id:'p'}, {defaultHourlyRate:50,currency:'EUR'});
+  assert.equal(summary.errors.length,0);
+  assert.equal(summary.minHours,0);
+  assert.equal(summary.maxHours,0);
+  assert.equal(summary.minAmount,500);
+  assert.equal(summary.maxAmount,500);
+  assert.equal(summary.lines[0].hasTimeEstimate,false);
+  assert.equal(summary.lines[0].trams[0].isFixedPrice,true);
+});
+
+test('Barreja hores tarifades, no facturables i serveis de preu fix', () => {
+  const a = buildQuoteSummary([{
+    id:'multi',nom:'Projecte',pressupostTrams:[
+      {id:'t1',horesMin:9,horesMax:11,tarifa:50},
+      {id:'t2',horesMin:2,horesMax:2,tarifa:0},
+      {id:'f',horesMin:0,horesMax:0,tarifa:200},
+    ],
+  }],{id:'p'},{defaultHourlyRate:50,currency:'EUR'});
+  assert.equal(a.errors.length,0);
+  assert.equal(a.minHours,11);
+  assert.equal(a.maxHours,13);
+  assert.equal(a.minAmount,650);
+  assert.equal(a.maxAmount,750);
+  assert.equal(a.lines[0].trams[1].isFixedPrice,false);
+});
+
+test('Import manual substitueix un interval per un total final fix i preserva les hores', () => {
+  const a = buildQuoteSummary([{id:'manual',nom:'Desenvolupament',horesEstimadesMin:9,horesEstimadesMax:11,
+    tarifaHorariaPressupost:50,importManualPressupost:500}],{id:'p'},{defaultHourlyRate:50,currency:'EUR'});
+  assert.equal(a.errors.length,0);
+  assert.equal(a.minHours,9);
+  assert.equal(a.maxHours,11);
+  assert.equal(a.minAmount,500);
+  assert.equal(a.maxAmount,500);
+  assert.equal(a.lines[0].manualPrice,500);
+});
+
+test('Import manual 0 és vàlid i la seva eliminació torna al càlcul automàtic', () => {
+  const task={id:'m',nom:'Bonificació',pressupostTrams:[{id:'r',horesMin:2,horesMax:3,tarifa:60}],importManualPressupost:0};
+  const pr={id:'p'},st={defaultHourlyRate:50,currency:'EUR'};
+  const free=buildQuoteSummary([task],pr,st);
+  const standard=buildQuoteSummary([{...task,importManualPressupost:undefined}],pr,st);
+  assert.equal(free.minAmount,0);
+  assert.equal(free.maxAmount,0);
+  assert.equal(standard.minAmount,120);
+  assert.equal(standard.maxAmount,180);
+});
+
+test('No accepta un import manual negatiu i manté el càlcul antic de 0 hores com a invàlid', () => {
+  const invalid=buildQuoteSummary([{id:'a',nom:'Test',pressupostTrams:[{id:'r',horesMin:0,horesMax:0,tarifa:100}],importManualPressupost:-1}],{id:'p'},{defaultHourlyRate:50});
+  assert.equal(invalid.errors.length,1);
+  const legacy=buildQuoteSummary([{id:'b',nom:'Antiga',pressupostHores:0}],{id:'p',tarifaHoraria:100},{defaultHourlyRate:50});
+  assert.equal(legacy.errors.length,1);
 });

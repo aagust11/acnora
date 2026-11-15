@@ -52,7 +52,8 @@ export default function QuotesView({ db, initialProjectId, onEditTasks, onIssueQ
     () => {
       if (!project) return null;
       const result = buildQuoteSummary(selectedTasks, project, db.settings);
-      result.lines = result.lines.map(line => ({ ...line,
+      result.lines = result.lines.map(line => ({
+        ...line,
         blocNom: quoteGroupLabel(quoteGroupKey(line.task), db.blocs),
       }));
       return result;
@@ -139,7 +140,7 @@ export default function QuotesView({ db, initialProjectId, onEditTasks, onIssueQ
         <div className="p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-slate-200">
           <div>
             <h3 className="font-semibold text-slate-900">Tasques incloses</h3>
-            <p className="text-sm text-slate-600 mt-1">Ordenat inicialment per nom del bloc de treball i després per tasca. Mou els blocs i les tasques amb les fletxes; l’ordre triat es reflectirà al PDF.</p>
+            <p className="text-sm text-slate-600 mt-1">Ordenat inicialment per nom del bloc de treball i després per tasca. Pots moure els blocs i les tasques amb les fletxes; l’ordre escollit serà el del PDF.</p>
           </div>
           <div className="flex flex-wrap gap-2">
             <button type="button" onClick={() => setManualOrder([])} disabled={!manualOrder.length}
@@ -173,7 +174,7 @@ export default function QuotesView({ db, initialProjectId, onEditTasks, onIssueQ
                       <td colSpan={6} className="px-3 py-2">
                         <div className="flex flex-wrap justify-between items-center gap-2">
                           <span className="text-sm font-semibold text-[#234e70]">{quoteGroupLabel(currentGroup, db.blocs)}</span>
-                          <div className="inline-flex gap-1">
+                          <div className="inline-flex gap-1" aria-label={`Reordenar bloc ${quoteGroupLabel(currentGroup, db.blocs)}`}>
                             <button type="button" aria-label={`Pujar bloc ${quoteGroupLabel(currentGroup, db.blocs)}`} title="Pujar bloc" disabled={groupPosition === 0} onClick={() => setManualOrder(moveQuoteGroup(projectTasks, db.blocs, manualOrder, currentGroup, -1))} className="rounded border border-slate-300 bg-white p-1.5 disabled:opacity-30 hover:bg-slate-50"><ArrowUp className="w-4 h-4" /></button>
                             <button type="button" aria-label={`Baixar bloc ${quoteGroupLabel(currentGroup, db.blocs)}`} title="Baixar bloc" disabled={groupPosition === displayedGroups.length - 1} onClick={() => setManualOrder(moveQuoteGroup(projectTasks, db.blocs, manualOrder, currentGroup, 1))} className="rounded border border-slate-300 bg-white p-1.5 disabled:opacity-30 hover:bg-slate-50"><ArrowDown className="w-4 h-4" /></button>
                           </div>
@@ -187,16 +188,18 @@ export default function QuotesView({ db, initialProjectId, onEditTasks, onIssueQ
                       <div className="font-medium text-slate-800">{task.nom}</div>
                       {task.descripcio && <div className="text-xs text-slate-500 mt-0.5 whitespace-pre-line">{task.descripcio}</div>}
                       {values.trams && values.trams.length > 1 && <div className="text-xs text-slate-600 mt-2 space-y-1 border-l-2 border-slate-200 pl-2">
-                        {values.trams.map(t => <div key={t.id}>{t.concepte || 'Tram'}: {hoursRange(t.horesMin,t.horesMax)} × {quoteRange(t.tarifa,t.tarifa,currency)}/h</div>)}
+                        {values.trams.map(t => <div key={t.id}>{t.concepte || 'Tram'}: {t.horesMin === 0 && t.horesMax === 0
+                          ? `preu fix ${quoteRange(t.tarifa,t.tarifa,currency)}`
+                          : `${hoursRange(t.horesMin,t.horesMax)} × ${quoteRange(t.tarifa,t.tarifa,currency)}/h`}</div>)}
                       </div>}
                     </td>
                     <td className="px-3 py-3 text-center whitespace-nowrap">
                       <button type="button" title="Pujar tasca" aria-label={`Pujar tasca ${task.nom}`} disabled={taskPosition === 0} onClick={() => setManualOrder(moveQuoteTask(projectTasks, db.blocs, manualOrder, task.id, -1))} className="inline-flex rounded border border-slate-300 p-1.5 mr-1 disabled:opacity-30 hover:bg-slate-50"><ArrowUp className="w-4 h-4" /></button>
                       <button type="button" title="Baixar tasca" aria-label={`Baixar tasca ${task.nom}`} disabled={taskPosition === groupTasks.length - 1} onClick={() => setManualOrder(moveQuoteTask(projectTasks, db.blocs, manualOrder, task.id, 1))} className="inline-flex rounded border border-slate-300 p-1.5 disabled:opacity-30 hover:bg-slate-50"><ArrowDown className="w-4 h-4" /></button>
                     </td>
-                    <td className="px-3 py-3 text-right tabular-nums">{values.minHours === undefined || values.maxHours === undefined ? <span className="text-amber-700">Pendent</span> : hoursRange(values.minHours, values.maxHours)}</td>
-                    <td className="px-3 py-3 text-right tabular-nums">{values.hourlyRate === null ? <span className="text-slate-600">Diverses tarifes</span> : quoteRange(values.hourlyRate, values.hourlyRate, currency)}</td>
-                    <td className="px-3 py-3 text-right tabular-nums font-medium">{valid ? quoteRange(quoted.minAmount, quoted.maxAmount, currency) : <span className="text-amber-700">Per completar</span>}</td>
+                    <td className="px-3 py-3 text-right tabular-nums">{values.minHours === undefined || values.maxHours === undefined ? <span className="text-amber-700">Pendent</span> : values.maxHours === 0 ? <span className="text-slate-500">—</span> : hoursRange(values.minHours, values.maxHours)}</td>
+                    <td className="px-3 py-3 text-right tabular-nums">{values.maxHours === 0 ? <span className="text-slate-600">Preu fix</span> : values.hourlyRate === null ? <span className="text-slate-600">Diverses tarifes</span> : quoteRange(values.hourlyRate, values.hourlyRate, currency)}</td>
+                    <td className="px-3 py-3 text-right tabular-nums font-medium">{valid ? <>{quoteRange(quoted.minAmount, quoted.maxAmount, currency)}{quoted.manualPrice !== undefined && <span className="block text-xs text-slate-500">Import manual</span>}</> : <span className="text-amber-700">Per completar</span>}</td>
                     </tr>
                   </React.Fragment>;
                 })}
@@ -210,7 +213,7 @@ export default function QuotesView({ db, initialProjectId, onEditTasks, onIssueQ
           </div>
         )}
         {summary && summary.lines.length > 0 && <div className="p-5 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row sm:justify-between gap-3">
-          <div className="text-sm text-slate-600">Estimació interna: <strong className="text-slate-800">{hoursRange(summary.minHours, summary.maxHours)}</strong></div>
+          <div className="text-sm text-slate-600">Estimació interna: <strong className="text-slate-800">{summary.maxHours === 0 ? 'Sense hores (preu fix)' : hoursRange(summary.minHours, summary.maxHours)}</strong></div>
           <div className="text-base font-semibold text-[#234e70]">Total estimat: {quoteRange(summary.minAmount, summary.maxAmount, currency)}</div>
         </div>}
       </div>}

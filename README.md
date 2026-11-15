@@ -116,3 +116,10 @@ El navegador guarda la referència al fitxer a IndexedDB, però pot requerir tor
 - Els JSON antics, que no contenen aquests camps opcionals, continuen carregant-se i funcionen com abans. No s'ha modificat el model de pressupostos.
 
 **Nota sobre arrodoniment:** com abans, les sessions amb treball efectiu positiu inferior a un minut es registren amb el mínim d'un minut; una sessió amb 0 ms de treball es registra amb 0 minuts. Les pauses no aporten minuts facturables.
+
+
+### Pressupost: serveis a preu fix i import manual
+
+A cada tasca pots afegir trams amb hores i tarifa. Si poses **0 h mínimes** i **0 h màximes**, l'import de la tarifa es tracta com un **preu fix del servei** (no com hores × tarifa). La línia del pressupost i el PDF no mostren 0 h ni €/h per a aquest tram. Amb hores positives i tarifa 0 €/h, en canvi, es registra treball no facturable.
+
+El camp opcional **Import final manual de la tasca** permet substituir el resultat de tots els trams per un preu pactat (també 0 €). Les hores queden per a planificació interna, el PDF identifica l'ajustament i no exposa subtotals de trams que no quadrarien amb el preu final. Deixar el camp buit restaura el càlcul automàtic. Els pressupostos ja emesos conserven el PDF original.

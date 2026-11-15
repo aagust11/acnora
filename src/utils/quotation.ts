@@ -1,15 +1,18 @@
 import type { Project, Task, Settings, QuoteRateBand } from '../types';
 
 export interface QuoteRateLine extends QuoteRateBand {
+  isFixedPrice: boolean;
   minAmount: number;
   maxAmount: number;
 }
 export interface QuoteLine {
   task: Task;
-  blocNom?: string;
+  blocNom?: string; // Title frozen for the PDF; no lookup after issuing
   minHours: number;
   maxHours: number;
   hourlyRate: number | null; // null means the task has multiple tariffs
+  manualPrice?: number; // Import final editat manualment
+  hasTimeEstimate: boolean;
   trams: QuoteRateLine[];
   minAmount: number;
   maxAmount: number;
@@ -56,21 +59,33 @@ export function buildQuoteSummary(tasks: Task[], project: Project, settings: Set
       errors.push(`«${task.nom}»: revisa els trams (hores vàlides, mínim ≤ màxim i tarifa ≥ 0).`);
       continue;
     }
-    if (!trams.some(t => t.horesMax > 0)) {
-      errors.push(`«${task.nom}»: afegeix almenys un tram amb hores estimades.`);
+    // Only explicit 0–0 trams denote fixed-price services. Old 0-hour legacy data remains invalid.
+    if (!inputs.trams && !trams.some(t => t.horesMax > 0)) {
+      errors.push(`«${task.nom}»: indica hores estimades o crea un tram explícit de 0–0 h per a un preu fix.`);
       continue;
     }
-    const ratedTrams: QuoteRateLine[] = trams.map(t => ({
-      ...t, minAmount: money(t.horesMin * t.tarifa), maxAmount: money(t.horesMax * t.tarifa),
-    }));
+    if (task.importManualPressupost !== undefined && !validNumber(task.importManualPressupost)) {
+      errors.push(`«${task.nom}»: l'import final manual ha de ser un número positiu o zero.`);
+      continue;
+    }
+    const ratedTrams: QuoteRateLine[] = trams.map(t => {
+      const isFixedPrice = t.horesMin === 0 && t.horesMax === 0;
+      return { ...t, isFixedPrice,
+        minAmount: money(isFixedPrice ? t.tarifa : t.horesMin * t.tarifa),
+        maxAmount: money(isFixedPrice ? t.tarifa : t.horesMax * t.tarifa),
+      };
+    });
+    const manualPrice = task.importManualPressupost === undefined ? undefined : money(task.importManualPressupost);
     lines.push({
       task,
       trams: ratedTrams,
       minHours: trams.reduce((sum, t) => sum + t.horesMin, 0),
       maxHours: trams.reduce((sum, t) => sum + t.horesMax, 0),
       hourlyRate: inputs.hourlyRate,
-      minAmount: money(ratedTrams.reduce((sum, t) => sum + t.minAmount, 0)),
-      maxAmount: money(ratedTrams.reduce((sum, t) => sum + t.maxAmount, 0)),
+      manualPrice,
+      hasTimeEstimate: trams.some(t => t.horesMax > 0),
+      minAmount: manualPrice ?? money(ratedTrams.reduce((sum, t) => sum + t.minAmount, 0)),
+      maxAmount: manualPrice ?? money(ratedTrams.reduce((sum, t) => sum + t.maxAmount, 0)),
     });
   }
   return {

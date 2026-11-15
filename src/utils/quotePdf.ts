@@ -123,11 +123,14 @@ export function generateQuotePDF(
 
   const number = (v: number) => new Intl.NumberFormat('ca-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v);
   const currency = settings.currency;
+  // No dedicated hours/tariff columns when the entire quotation is fixed-price.
+  const showHours = options.showHours && lines.some(line => line.hasTimeEstimate);
+  const showHourlyRates = options.showHourlyRates && lines.some(line => line.hasTimeEstimate);
   const amt = (min: number, max: number) => quoteRange(min, max, currency);
   const colAmount = right;
   const colRate = right - 53;
-  const colHours = right - (options.showHourlyRates ? 83 : 53);
-  const titleWidth = options.showHours && options.showHourlyRates ? 81 : 113;
+  const colHours = right - (showHourlyRates ? 83 : 53);
+  const titleWidth = showHours && showHourlyRates ? 81 : 113;
   const drawHeader = () => {
     pageBreak(12);
     doc.setFillColor(238, 243, 247);
@@ -136,8 +139,8 @@ export function generateQuotePDF(
     doc.setTextColor(...dark);
     doc.setFontSize(8);
     doc.text('TASCA / DESCRIPCIÓ', left + 2, y + 4);
-    if (options.showHours) doc.text('HORES', colHours - 3, y + 4, { align: 'right' });
-    if (options.showHourlyRates) doc.text('TARIFA', colRate, y + 4, { align: 'right' });
+    if (showHours) doc.text('HORES', colHours - 3, y + 4, { align: 'right' });
+    if (showHourlyRates) doc.text('TARIFA', colRate, y + 4, { align: 'right' });
     doc.text('IMPORT ESTIMAT', colAmount - 1, y + 4, { align: 'right' });
     y += 12;
   };
@@ -183,14 +186,23 @@ export function generateQuotePDF(
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(8);
     setDark();
-    if (options.showHours) doc.text(hoursRange(line.minHours, line.maxHours), colHours - 3, top + 2.5, { align: 'right' });
-    if (options.showHourlyRates) doc.text(line.hourlyRate === null ? 'Diverses' : `${number(line.hourlyRate)} ${currency}/h`, colRate, top + 2.5, { align: 'right' });
+    if (showHours && line.hasTimeEstimate) doc.text(hoursRange(line.minHours, line.maxHours), colHours - 3, top + 2.5, { align: 'right' });
+    if (showHourlyRates) {
+      if (line.hasTimeEstimate) doc.text(line.hourlyRate === null ? 'Diverses' : `${number(line.hourlyRate)} ${currency}/h`, colRate, top + 2.5, { align: 'right' });
+      else doc.text('Preu fix', colRate, top + 2.5, { align: 'right' });
+    }
     // Fit amounts to the allocated right-hand column; if needed render on 2 lines.
     const display = amt(line.minAmount, line.maxAmount);
-    const amountWidth = options.showHourlyRates ? 51 : options.showHours ? 52 : 98;
+    const amountWidth = showHourlyRates ? 51 : showHours ? 52 : 98;
     const amountParts = doc.splitTextToSize(safe(display), amountWidth);
     doc.text(amountParts, colAmount - 1, top + 2.5, { align: 'right' });
     y = top + Math.max(textHeight, amountParts.length * 4 + 3);
+    if (line.manualPrice !== undefined) {
+      pageBreak(6);
+      doc.setFontSize(7); doc.setTextColor(93, 108, 120);
+      doc.text('Preu acordat per aquest servei', left + 5, y + 2);
+      y += 5;
+    }
     // Show the per-rate breakdown only when there is more than one rate band.
     // Never reveal internal hours or hourly rates when the PDF options hide them.
     if (line.trams.length > 1) {
@@ -199,16 +211,17 @@ export function generateQuotePDF(
         pageBreak(8);
         const label = safe(tram.concepte || `Tram ${index + 1}`);
         const details = [
-          options.showHours ? hoursRange(tram.horesMin, tram.horesMax) : '',
-          options.showHourlyRates ? `${number(tram.tarifa)} ${currency}/h` : '',
+          !tram.isFixedPrice && showHours ? hoursRange(tram.horesMin, tram.horesMax) : '',
+          !tram.isFixedPrice && showHourlyRates ? `${number(tram.tarifa)} ${currency}/h` : '',
         ].filter(Boolean).join('  ·  ');
         doc.setFont('helvetica', 'normal');
         doc.setFontSize(7);
         doc.setTextColor(93, 108, 120);
         const detailText = `${label}${details ? ': ' + details : ''}`;
-        const parts = wrapPreserveLines(detailText, content - 8 - (options.showHourlyRates || options.showHours ? 49 : 37));
+        const parts = wrapPreserveLines(detailText, content - 8 - (showHourlyRates || showHours ? 49 : 37));
         doc.text(parts, left + 5, y + 2);
-        doc.text(safe(amt(tram.minAmount, tram.maxAmount)), colAmount - 1, y + 2, { align: 'right' });
+        // For an overridden task, component amounts would not add up to the agreed price.
+        if (line.manualPrice === undefined) doc.text(safe(amt(tram.minAmount, tram.maxAmount)), colAmount - 1, y + 2, { align: 'right' });
         y += Math.max(4, parts.length * 3.3);
       });
       y += 2;
@@ -229,7 +242,7 @@ export function generateQuotePDF(
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(10);
   doc.text('TOTAL ESTIMAT', left + 5, y + 7);
-  if (options.showHours) {
+  if (showHours && hourMax > 0) {
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(8);
     doc.text(hoursRange(hourMin, hourMax), left + 5, y + 13);

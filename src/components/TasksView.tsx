@@ -32,6 +32,7 @@ export default function TasksView({ db, onAddBlock, onUpdateBlock, onDeleteBlock
   const [blocId, setBlocId] = useState('');
   type DraftRate = { id: string; concepte: string; horesMin: string; horesMax: string; tarifa: string };
   const [draftRates, setDraftRates] = useState<DraftRate[]>([]);
+  const [manualPrice, setManualPrice] = useState('');
   const [selectedBlockId, setSelectedBlockId] = useState('all');
   const [editingBlock, setEditingBlock] = useState<WorkBlock | null>(null);
   const [blockName, setBlockName] = useState('');
@@ -46,7 +47,8 @@ export default function TasksView({ db, onAddBlock, onUpdateBlock, onDeleteBlock
     id: t.id, concepte: t.concepte, horesMin: Number(t.horesMin), horesMax: Number(t.horesMax), tarifa: Number(t.tarifa),
   }));
   const previewQuote = selectedProject && previewRates.length && previewRates.length === draftRates.length
-    ? buildQuoteSummary([{id: editingTask?.id ?? 'preview', nom, projecteId, estat, pressupostTrams: previewRates} as Task], selectedProject, db.settings)
+    ? buildQuoteSummary([{id: editingTask?.id ?? 'preview', nom, projecteId, estat, pressupostTrams: previewRates,
+        importManualPressupost: manualPrice.trim() === '' ? undefined : Number(manualPrice)} as Task], selectedProject, db.settings)
     : null;
 
   const openCreateBlock = () => {
@@ -91,6 +93,7 @@ export default function TasksView({ db, onAddBlock, onUpdateBlock, onDeleteBlock
     setBlocId(selectedBlockId !== 'all' && selectedBlockId !== 'none' ? selectedBlockId : '');
     setEstat('pendent');
     setDraftRates([]);
+    setManualPrice('');
     setFormError(null);
     setShowForm(true);
   };
@@ -103,6 +106,7 @@ export default function TasksView({ db, onAddBlock, onUpdateBlock, onDeleteBlock
     setCategoria(task.categoria || '');
     setBlocId(task.blocId || '');
     setEstat(task.estat);
+    setManualPrice(task.importManualPressupost === undefined ? '' : String(task.importManualPressupost));
     if (Array.isArray(task.pressupostTrams)) {
       setDraftRates(task.pressupostTrams.map(r => ({ id:r.id, concepte:r.concepte || '', horesMin:String(r.horesMin), horesMax:String(r.horesMax), tarifa:String(r.tarifa) })));
     } else {
@@ -134,8 +138,10 @@ export default function TasksView({ db, onAddBlock, onUpdateBlock, onDeleteBlock
     if (rated.some(t => !Number.isFinite(t.horesMin) || !Number.isFinite(t.horesMax) || !Number.isFinite(t.tarifa) || t.horesMin < 0 || t.horesMax < t.horesMin || t.tarifa < 0)) {
       setFormError('Revisa els trams: mínim ≤ màxim i tarifa ≥ 0.'); return;
     }
-    if (rated.length && !rated.some(t => t.horesMax > 0)) {
-      setFormError('Introdueix alguna hora estimada o elimina els trams buits.'); return;
+    // 0–0 h is a valid fixed-price service. The number in "tarifa" is its total price.
+    const fixedPriceInput = manualPrice.trim() === '' ? undefined : Number(manualPrice);
+    if (fixedPriceInput !== undefined && (!Number.isFinite(fixedPriceInput) || fixedPriceInput < 0)) {
+      setFormError('L’import final manual no pot ser negatiu.'); return;
     }
     if (blocId && !blocs.some(b => b.id === blocId && b.projecteId === projecteId)) {
       setFormError('El bloc seleccionat no pertany a aquest projecte.'); return;
@@ -158,6 +164,7 @@ export default function TasksView({ db, onAddBlock, onUpdateBlock, onDeleteBlock
       horesEstimadesMax: max,
       tarifaHorariaPressupost: undefined,
       pressupostTrams: rated.length ? rated : undefined,
+      importManualPressupost: fixedPriceInput,
       dataCreacio: editingTask ? editingTask.dataCreacio : new Date().toISOString(),
       dataModificacio: new Date().toISOString()
     };
@@ -501,7 +508,7 @@ export default function TasksView({ db, onAddBlock, onUpdateBlock, onDeleteBlock
               <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 space-y-3">
                 <div>
                   <h4 className="text-sm font-semibold text-slate-800">Pressupost d'aquesta tasca</h4>
-                  <p className="text-xs text-slate-600 mt-1">Afegeix un o diversos trams. Pots combinar tarifes diferents i posar <strong>0 €/h</strong> quan la dedicació no sigui facturable.</p>
+                  <p className="text-xs text-slate-600 mt-1">Afegeix trams amb hores i tarifes. Una tarifa de <strong>0 €/h</strong> compta hores no facturables. Amb <strong>0 h mínimes i 0 h màximes</strong>, l’últim camp passa a ser el <strong>preu fix del servei</strong>, sense hores al pressupost.</p>
                 </div>
                 {draftRates.map((rate, index) => (
                   <div key={rate.id} className="bg-white border border-slate-200 rounded-md p-3 space-y-2">
@@ -514,7 +521,7 @@ export default function TasksView({ db, onAddBlock, onUpdateBlock, onDeleteBlock
                         placeholder="Anàlisi, desenvolupament, revisió..." className="block mt-1 w-full border border-slate-300 rounded-md p-2 bg-white" />
                     </label>
                     <div className="grid grid-cols-3 gap-2">
-                      {([['horesMin', 'Mínim (h)'], ['horesMax', 'Màxim (h)'], ['tarifa', `${db.settings.currency}/h`]] as const).map(([field, title]) => (
+                      {([['horesMin', 'Mínim (h)'], ['horesMax', 'Màxim (h)'], ['tarifa', rate.horesMin === '0' && rate.horesMax === '0' ? `Preu fix (${db.settings.currency})` : `Tarifa (${db.settings.currency}/h)`]] as const).map(([field, title]) => (
                         <label key={field} className="text-xs font-medium text-slate-700">{title}
                           <input type="number" min="0" step={field === 'tarifa' ? '0.01' : '0.25'} value={rate[field]}
                             onChange={e => setDraftRates(rows => rows.map(r => r.id === rate.id ? {...r, [field]:e.target.value} : r))}
@@ -523,15 +530,23 @@ export default function TasksView({ db, onAddBlock, onUpdateBlock, onDeleteBlock
                         </label>
                       ))}
                     </div>
-                    {rate.tarifa === '0' && <p className="text-xs text-slate-600">Aquest tram compta hores, però té un import de 0 €.</p>}
+                    {rate.horesMin === '0' && rate.horesMax === '0'
+                      ? <p className="text-xs text-slate-600">Servei a preu fix: {rate.tarifa || '0'} {db.settings.currency}. No es mostraran hores ni tarifa horària al PDF per aquest tram.</p>
+                      : rate.tarifa === '0' && <p className="text-xs text-slate-600">Aquest tram compta hores, però té un import de 0 €.</p>}
                   </div>
                 ))}
-                <button type="button" onClick={() => setDraftRates(rows => [...rows, newDraft()])} className="text-xs font-semibold text-[#234e70] border border-slate-300 bg-white rounded-md px-3 py-2">+ Afegir tram d'hores</button>
+                <button type="button" onClick={() => setDraftRates(rows => [...rows, newDraft()])} className="text-xs font-semibold text-[#234e70] border border-slate-300 bg-white rounded-md px-3 py-2">+ Afegir tram (hores o preu fix)</button>
                 {!draftRates.length && <p className="text-xs text-slate-500">Sense estimació: la tasca es pot desar, però no es podrà incloure en un pressupost fins que tingui algun tram.</p>}
+                <label className="block text-xs font-semibold text-slate-700">Import final manual de la tasca ({db.settings.currency}) · opcional
+                  <input type="number" min="0" step="0.01" inputMode="decimal" value={manualPrice}
+                    onChange={e => setManualPrice(e.target.value)} placeholder="Deixa buit per calcular automàticament"
+                    className="block mt-1 w-full max-w-xs border border-slate-300 rounded-md p-2 bg-white" />
+                </label>
+                <p className="text-xs text-slate-600">Si introdueixes un import, substitueix el total calculat per hores × tarifa (mínim i màxim). Les hores continuen sent una estimació interna. Per tornar al càlcul automàtic, deixa el camp buit.</p>
                 {previewQuote && previewQuote.errors.length === 0 && (
                   <div className="border-t border-slate-200 pt-3 text-xs font-semibold text-[#234e70] flex justify-between gap-2 flex-wrap">
-                    <span>{hoursRange(previewQuote.minHours, previewQuote.maxHours)}</span>
-                    <span>Total estimat: {quoteRange(previewQuote.minAmount, previewQuote.maxAmount, db.settings.currency)}</span>
+                    <span>{previewQuote.maxHours > 0 ? hoursRange(previewQuote.minHours, previewQuote.maxHours) : 'Servei a preu fix'}</span>
+                    <span>{manualPrice.trim() !== '' ? 'Import final manual' : 'Total estimat'}: {quoteRange(previewQuote.minAmount, previewQuote.maxAmount, db.settings.currency)}</span>
                   </div>
                 )}
               </div>
